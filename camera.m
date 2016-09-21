@@ -1,34 +1,30 @@
 %% camera class - a distorted camera model.
 %
 % This class is an implementation of a distorted camera model.
-% Note: Uses <http://docs.opencv.org/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html the same distorted camera model as opencv>.
+% Note: Uses <http://docs.opencv.org/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html the same distorted camera model as OpenCV>.
 %
+% camera Intrinsic parameters:
+%  imgsz   - size of image in pixels [rows|height, columns|width] NOTE: y, x
+%  f       - focal length in pixel units [f] or [fx, fy]
+%  c       - camera center in pixel coordinates [cx, cy]
+%  k       - radial distortion coefficients [k1...k6]
+%  p       - tangential distortion coefficients [p1, p2]
+%  xyz     - camera position [x, y, z]
+%  viewdir - camera view direction in radians [yaw, pitch, roll]
+%            yaw: counterclockwise rotation about the z-axis (0 = east)
+%            pitch: look up/down angle
+%            roll: camera roll (horizon tilt)
 %
-% camera properties:
-%  imgsz   - size of image in pixels [#rows, #columns]
-%  f       - focal length in pixel units (two element vector [fx,fy])
-%  c       - camera center in pixel coordinates (two element vector: [cx,cy])
-%  k       - radial distortion coefficients. (six element vector: [k1-k6])
-%  p       - tangential distortion coefficients (two element vector: [p1,p2])
-%  xyz     - world coordinates of camera.
-%  viewdir - [yaw,pitch,roll]. Yaw: rotation about z (0=looking east)
-%                              Pitch: look up/down angle
-%                              Roll: camera roll (horizon tilt).
-%
-% camera Dependent/derived properties:
-%  (i.e. properties calculated from the camera parameters)
-%  R         - camera rotation matrix calculated from camera view
-%              direction (read only)
-%  fullmodel - a 20-element vector containing all camera properties.
-%              [camx,camy,camz,imgszy,imgszx,viewdiryaw,viewdirpitch,viewdirroll,fx,fy,cx,cy,k1-6,p1-2]
+% camera Derived parameters:
+%  R         - rotation matrix calculated from camera view direction (read only)
+%  fullmodel - 20-element vector containing all camera parameters
+%              [xyz(1:3), imgsz(1:2), viewdir(1:3), f(1:2), c(1:2), k(1:6), p(1:2)]
 %
 % camera Methods:
 %  camera      - constructor
-%  optimizecam - optimize the camera to mimimize misfit between
-%                projected world coordinates and pixel coordinates.
-%  project     - project world coordinates to image coordinates (3d->2d)
-%  invproject  - project image coordinates to world coordinates (2d->3d)
-%
+%  optimizecam - optimize camera parameters to mimimize pixel distances between projected world coordinates and associated image coordinates
+%  project     - project world coordinates to image coordinates (3D -> 2D)
+%  invproject  - project image coordinates to world coordinates (2D -> 3D)
 %
 % ImGRAFT - An image georectification and feature tracking toolbox for MATLAB
 % Copyright (C) 2014 Aslak Grinsted (<www.glaciology.net glaciology.net>)
@@ -52,83 +48,100 @@
 % THE SOFTWARE.
 
 classdef camera
-    
+
     properties
-        xyz = [0 0 0]; %world coordinates of camera;
-        imgsz = [100 100]; %size of image in pixels [#rows, #columns] Note: swapped xy
-        viewdir = [0 0 0]; %view direction: yaw/pitch/roll. Yaw: rotation about z (0=looking east) | Pitch: look up/down angle | Roll: camera roll (horizon tilt)
-        f = [5000 5000]; %focal length (two element vector).
-        c = [50 50]; %camera center in pixel coordinates
-        k = [0 0 0 0 0 0]; %k1-k6: radial distortion coefficients.
-        p = [0 0]; %p1-p2: tangential distortion coefficients
+        xyz = [0 0 0];
+        imgsz = [100 100];
+        viewdir = [0 0 0];
+        f = [5000 5000];
+        c = [50 50];
+        k = [0 0 0 0 0 0];
+        p = [0 0];
     end
-    
+
     properties (Dependent)
-        % Camera rotation matrix calculated from viewdir. (read-only)
         R
-        
-        % All camera properties serialized into a 20 element vector.
-        % fullmodel=[camx,camy,camz,imgszy,imgszx,viewdiryaw,viewdirpitch,viewdirroll,fx,fy,cx,cy,k1-6,p1-2]
-        % Remark: Setting does not validate inputs!
         fullmodel
     end
-    
+
     methods
         function cam = camera(varargin)
-            %This is the camera constructor
+            % CAMERA Construct a new camera object.
             %
-            %There are three ways of constructing a new camera object:
+            % There are three ways of calling this function -
             %
-            % 1. specifying all camera properties in the constructor:
-            % cam = camera(xyz,imgsz[,viewdir,f,c,k,p])
+            % 1. Specify all camera parameters as a list:
             %
-            % 2. Use the default camera and then modifying the camera properties
-            % cam = camera()
-            % cam.viewdir = [pi 0 0]; %look west.
+            %   cam = camera(xyz, imgsz, viewdir, f, c, k, p)
             %
-            % 3. provide a "<a href="matlab:help camera.fullmodel">fullmodel</a>" specifying all the camera
-            %    properties in a single 20-element vector.
-            %    (beware: no error checking).
-            % cam = camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
+            % 2. Specify all camera parameters as a 20-element (fullmodel) vector:
             %
-            if nargin==0, return, end
-            if nargin==1
-                cam.fullmodel=varargin{1};
-                return
+            %   cam = camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
+            %
+            % 3. Initialize with default parameters, then edit individual parameters:
+            %
+            %   cam = camera()
+            %   cam.viewdir = [pi 0 0]; % look west
+
+            % No arguments: return default camera
+            if nargin == 0, return, end
+
+            % Single argument: build camera from fullmodel vector
+            if nargin == 1, cam.fullmodel = varargin{1}; end
+
+            % Multiple arguments: set and validate camera parameters individually
+            if nargin > 1
+
+              % Set parameters
+              cam.xyz = varargin{1};
+              cam.imgsz = varargin{2};
+              if nargin >= 3, cam.viewdir = varargin{3}; end
+              if nargin >= 4, cam.f = varargin{4}; end
+              if nargin >= 5, cam.c = varargin{5}; end
+              if nargin >= 6, cam.k = varargin{6}; end
+              if nargin >= 7, cam.p = varargin{7}; end
+
+              % Validate parameters
+              % xyz: 3-element vector, default = 0
+              cam.xyz(end + 1:3) = 0; cam.xyz(4:end) = [];
+              % imgsz: 2-element vector, no default
+              if length(cam.imgsz) < 2, error('Image size (imgsz) must have two elements.'); end
+              cam.imgsz(3:end)=[];
+              % viewdir: 3-element vector, default = 0
+              cam.viewdir(end + 1:3) = 0; cam.viewdir(4:end) = [];
+              % f: 2-element vector, no default, expand [f] to [f, f]
+              cam.f(end + 1:2) = cam.f(end); cam.f(3:end) = [];
+              % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
+              if length(cam.c) < 2, error('Camera center (c) must have two elements.'); end
+              if isempty(cam.c), cam.c = (cam.imgsz([2 1]) + 1)/2; end
+              cam.c(3:end) = [];
+              % k: 6-element vector, default = 0
+              cam.k(end + 1:6) = 0; cam.k(7:end) = [];
+              % p: 2-element vector, default = 0
+              cam.p(end + 1:2) = 0; cam.p(3:end) = [];
             end
-            if nargin<7,varargin{7}=[];end;
-            cam.xyz = varargin{1};
-            cam.imgsz = varargin{2};
-            cam.viewdir=varargin{3};
-            cam.f=varargin{4};
-            cam.c=varargin{5};
-            cam.k=varargin{6};
-            cam.p=varargin{7};
-            
-            if length(cam.imgsz)<2, error('malformed image size.'); end
-            cam.imgsz(3:end)=[];
-            cam.f(end+1:2)=cam.f(end);
-            if isempty(cam.c), cam.c=(cam.imgsz([2 1])+1)/2; end
-            cam.k(end+1:6)=0;
-            cam.p(end+1:2)=0;
         end
-        
+
         function value = get.R(cam)
             %Camera rotation matrix calculated from viewdir
-            C = cos( cam.viewdir ); S = sin( cam.viewdir );
-            value = [S(3).*S(2).*C(1)-C(3).*S(1) , S(3).*S(2).*S(1) + C(3).*C(1) , S(3).*C(2); C(3).*S(2).*C(1) + S(3).*S(1), C(3).*S(2).*S(1) - S(3).*C(1) , C(3).*C(2); C(2).*C(1) , C(2).*S(1) , -S(2)];
-            value(1:2,:)=-value(1:2,:);
+            C = cos(cam.viewdir); S = sin(cam.viewdir);
+            value = [S(3).*S(2).*C(1)-C(3).*S(1) , S(3).*S(2).*S(1) + C(3).*C(1) , S(3).*C(2); ...
+                     C(3).*S(2).*C(1) + S(3).*S(1) , C(3).*S(2).*S(1) - S(3).*C(1) , C(3).*C(2); ...
+                     C(2).*C(1) , C(2).*S(1) , -S(2)];
+            value(1:2, :) = -value(1:2, :);
         end
-        
+
         function value = get.fullmodel(cam)
-            value=[cam.xyz,cam.imgsz,cam.viewdir,cam.f,cam.c,cam.k,cam.p];
+            value = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
         end
-        function cam = set.fullmodel(cam,value)
-            cam.xyz=value(1:3); cam.imgsz=value(4:5); cam.viewdir=value(6:8); cam.f=value(9:10);
-            cam.c=value(11:12); cam.k=value(13:18); cam.p=value(19:20);
+        function cam = set.fullmodel(cam, value)
+            if length(value) < 20, error('Camera model vector (fullmodel) must have 20 elements.'), end
+            cam.xyz = value(1:3);
+            cam.imgsz = value(4:5); cam.viewdir = value(6:8); cam.f = value(9:10);
+            cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
         end
-        
-        function [uv,depth,inframe]=project(cam,xyz)
+
+        function [uv,depth,inframe] = project(cam,xyz)
             % project the xyz world coordinates into image coordinates (uv)
             %
             % [uv,depth,inframe]=cam.project(xyz)
@@ -160,8 +173,8 @@ classdef camera
                 xy=[a.*xy(:,1)+2*cam.p(1)*xty+cam.p(2)*(r2+2*xy(:,1).^2), a.*xy(:,2)+2*cam.p(1)*xty+cam.p(2)*(r2+2*xy(:,2).^2)];
             end
             uv=[cam.f(1)*xy(:,1)+cam.c(1) cam.f(2)*xy(:,2)+cam.c(2)];
-            uv(xyz(:,3)<=0,:)=nan; 
-            
+            uv(xyz(:,3)<=0,:)=nan;
+
             if nargout>1
                 depth=xyz(:,3);
             end
@@ -169,7 +182,7 @@ classdef camera
                 inframe=(depth>0)&(uv(:,1)>=1)&(uv(:,2)>=1)&(uv(:,1)<=cam.imgsz(2))&(uv(:,2)<=cam.imgsz(1)); %todo: additional constraint for negative k1 and r2>1. (See orthorectification example)
             end
         end
-        
+
         function xyz=invproject(cam,uv,X,Y,Z,xy0)
             % Inverse projection from 2d to 3d coordinates. (pixel->world)
             %
@@ -210,7 +223,7 @@ classdef camera
                 uv(nanix,:)=[];
             end
             if nargin==2
-                
+
                 %first an exact calculation based on non-distorted model...
                 depth=1000;
                 xyz=[(uv(:,1)-cam.c(1))/cam.f(1) (uv(:,2)-cam.c(2))/cam.f(2)]*depth;
@@ -239,7 +252,7 @@ classdef camera
                     uv0(:,4)=Y(visible(:));
                     uv0(:,5)=Z(visible(:));
                     uv0=uv0(inframe,:);
-                    if exist('scatteredInterpolant','file')>1 
+                    if exist('scatteredInterpolant','file')>1
                         Xscat=scatteredInterpolant(uv0(:,3),uv0(:,4),uv0(:,3));
                         Xscat.Points=uv0(:,1:2);
                         Yscat=Xscat; Yscat.Values=uv0(:,4);
@@ -260,14 +273,14 @@ classdef camera
                     end
                     return
                 end
-                
+
                 if Y(2,2)<Y(1,1)
                     X=flipud(X);Y=flipud(Y);Z=flipud(Z);
                 end
                 if X(2,2)<X(1,1)
                     X=fliplr(X);Y=fliplr(Y);Z=fliplr(Z);
                 end
-                
+
                 if exist('griddedInterpolant','file')>1
                     zfun=griddedInterpolant(X',Y',Z'); %TODO: improve robustness.
                 else
@@ -287,15 +300,15 @@ classdef camera
                     catch
                     end
                 end
-                
+
             end
-            if anynans                
+            if anynans
                 xyz(find(~nanix),:)=xyz; %find necessary because it ensures that xyz can grow.
                 xyz(find(nanix),:)=nan;
             end
         end
-        
-        
+
+
         function [result,rmse,AIC]=optimizecam(cam,xyz,uv,freeparams)
             % Tune the camera so that projecting xyz results in uv (least squares)
             %
@@ -328,37 +341,37 @@ classdef camera
             %   [newcamera,rmse,AIC] = cam.optimizecam(xyz,uv,'00000111000000000000')
             %
             %
-            
+
             nanrows=any(isnan(xyz),2)|any(isnan(uv),2);
             xyz(nanrows,:)=[];
             uv(nanrows,:)=[];
-            
+
             fullmodel0=cam.fullmodel; %this describes the initial camera that is being perturbed.
-            
+
             freeparams=~(freeparams(:)==0|freeparams(:)=='0')'; %convert to bools
             paramix=find(freeparams);
             Nfree=length(paramix);
             mbest=zeros(1,Nfree);
-            
+
             newcam=@(m)camera( fullmodel0 + sparse(ones(1,Nfree),paramix,m,1,length(fullmodel0)) );
-            
+
             if size(uv,2)==3
                 misfit=@(m)reshape((project(newcam(m),xyz)-uv(:,1:2)).*uv(:,[3 3]),[],1);%weighted least squares
             else
                 misfit=@(m)reshape(project(newcam(m),xyz)-uv,[],1);
             end
             if isnan(misfit(mbest))
-                error('All GCPs must be infront of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement. 
+                error('All GCPs must be infront of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement.
             end
-            
+
             [mbest,RSS]=LMFnlsq(misfit,mbest); %WORKS SUPER FAST
-            
-            
+
+
             Nuv=size(uv,1);
             rmse=sqrt(RSS/Nuv);
             AIC=numel(uv)*log(RSS/numel(uv)) + 2*Nfree;
             result=newcam(mbest);
         end
-        
+
     end % methods
 end % classdef
