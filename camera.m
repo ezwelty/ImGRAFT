@@ -11,9 +11,9 @@
 %  p       - tangential distortion coefficients [p1, p2]
 %  xyz     - camera position [x, y, z]
 %  viewdir - camera view direction in radians [yaw, pitch, roll]
-%            yaw: counterclockwise rotation about the z-axis (0 = east)
-%            pitch: look up/down angle
-%            roll: camera roll (horizon tilt)
+%            yaw: counterclockwise rotation about z-axis (0 = look east)
+%            pitch: rotation from horizon (+ look down, - look up)
+%            roll: rotation about optical axis (+ down right, - down left, from behind)
 %
 % camera Derived parameters:
 %  R         - rotation matrix calculated from camera view direction (read only)
@@ -47,6 +47,10 @@
 % OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 % THE SOFTWARE.
 
+% TODO: Reverse directions of yaw and pitch angles.
+% TODO: Use degrees for yaw, pitch, and roll angles.
+% TODO: Reverse imgsz [y, x] to [x, y].
+
 classdef camera
 
     properties
@@ -65,10 +69,12 @@ classdef camera
     end
 
     methods
+
+        % TODO: Construct from structure.
         function cam = camera(varargin)
             % CAMERA Construct a new camera object.
             %
-            % There are three ways of calling this function -
+            % There are three ways of calling this function –
             %
             % 1. Specify all camera parameters as a list:
             %
@@ -123,17 +129,31 @@ classdef camera
         end
 
         function value = get.R(cam)
-            %Camera rotation matrix calculated from viewdir
-            C = cos(cam.viewdir); S = sin(cam.viewdir);
-            value = [S(3).*S(2).*C(1)-C(3).*S(1) , S(3).*S(2).*S(1) + C(3).*C(1) , S(3).*C(2); ...
-                     C(3).*S(2).*C(1) + S(3).*S(1) , C(3).*S(2).*S(1) - S(3).*C(1) , C(3).*C(2); ...
-                     C(2).*C(1) , C(2).*S(1) , -S(2)];
-            value(1:2, :) = -value(1:2, :);
+          % Initial rotations of camera reference frame
+          % (camera +z pointing up, with +x east and +y north)
+          % Point camera north: -90 deg counterclockwise rotation about x-axis
+          ri_1 = [1 0 0; 0 cosd(-90) sind(-90); 0 -sind(-90) cosd(-90)];
+          % Point camera east: 90 deg counterclockwise rotation about y-axis
+          ri_2 = [cosd(90) 0 -sind(90); 0 1 0; sind(90) 0 cosd(90)];
+          % (camera +z now pointing east, with +x south and +y down)
+
+          % View direction rotations
+          % yaw: clockwise rotation about y-axis (relative to east, from above: + ccw, - cw) NOTE: - ccw, +cw
+          % pitch: clockwise rotation about x-axis (relative to horizon: - up, + down) NOTE: - ccw, +cw
+          % roll: counterclockwise rotation about z-axis, (from behind camera: + ccw, - cw)
+          C = cos(cam.viewdir); S = sin(cam.viewdir);
+          ry = [C(1) 0 S(1); 0 1 0; -S(1) 0 C(1)];
+          rp = [1 0 0; 0 C(2) -S(2); 0 S(2) C(2)];
+          rr = [C(3) S(3) 0; -S(3) C(3) 0; 0 0 1];
+
+          % Combine all rotations in order
+          value = rr * rp * ry * ri_2 * ri_1;
         end
 
         function value = get.fullmodel(cam)
             value = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
         end
+
         function cam = set.fullmodel(cam, value)
             if length(value) < 20, error('Camera model vector (fullmodel) must have 20 elements.'), end
             cam.xyz = value(1:3);
