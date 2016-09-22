@@ -17,6 +17,7 @@
 %
 % camera Derived parameters:
 %  R         - rotation matrix calculated from camera view direction (read only)
+%  K         - camera matrix [fx 0 cx; 0 fy cy; 0 0 1] (read only)
 %  fullmodel - 20-element vector containing all camera parameters
 %              [xyz(1:3), imgsz(1:2), viewdir(1:3), f(1:2), c(1:2), k(1:6), p(1:2)]
 %
@@ -65,12 +66,12 @@ classdef camera
 
     properties (Dependent)
         R
+        K
         fullmodel
     end
 
     methods
 
-        % TODO: Construct from structure.
         function cam = camera(varargin)
             % CAMERA Construct a new camera object.
             %
@@ -132,22 +133,25 @@ classdef camera
           % Initial rotations of camera reference frame
           % (camera +z pointing up, with +x east and +y north)
           % Point camera north: -90 deg counterclockwise rotation about x-axis
-          ri_1 = [1 0 0; 0 cosd(-90) sind(-90); 0 -sind(-90) cosd(-90)];
+          %   ri_1 = [1 0 0; 0 cosd(-90) sind(-90); 0 -sind(-90) cosd(-90)];
           % Point camera east: 90 deg counterclockwise rotation about y-axis
-          ri_2 = [cosd(90) 0 -sind(90); 0 1 0; sind(90) 0 cosd(90)];
+          %   ri_2 = [cosd(90) 0 -sind(90); 0 1 0; sind(90) 0 cosd(90)];
           % (camera +z now pointing east, with +x south and +y down)
 
           % View direction rotations
-          % yaw: clockwise rotation about y-axis (relative to east, from above: + ccw, - cw) NOTE: - ccw, +cw
-          % pitch: clockwise rotation about x-axis (relative to horizon: - up, + down) NOTE: - ccw, +cw
-          % roll: counterclockwise rotation about z-axis, (from behind camera: + ccw, - cw)
           C = cos(cam.viewdir); S = sin(cam.viewdir);
-          ry = [C(1) 0 S(1); 0 1 0; -S(1) 0 C(1)];
-          rp = [1 0 0; 0 C(2) -S(2); 0 S(2) C(2)];
-          rr = [C(3) S(3) 0; -S(3) C(3) 0; 0 0 1];
+          % yaw: clockwise rotation about y-axis (relative to east, from above: + ccw, - cw) NOTE: - ccw, +cw
+          %   ry = [C(1) 0 S(1); 0 1 0; -S(1) 0 C(1)];
+          % pitch: clockwise rotation about x-axis (relative to horizon: - up, + down) NOTE: - ccw, +cw
+          %   rp = [1 0 0; 0 C(2) -S(2); 0 S(2) C(2)];
+          % roll: counterclockwise rotation about z-axis, (from behind camera: + ccw, - cw)
+          %   rr = [C(3) S(3) 0; -S(3) C(3) 0; 0 0 1];
 
-          % Combine all rotations in order
-          value = rr * rp * ry * ri_2 * ri_1;
+          % Apply all rotations in order
+          %   R = rr * rp * ry * ri_2 * ri_1;
+          value = [ C(3) * S(1) - C(1) * S(2) * S(3), -C(1) * C(3) - S(1) * S(2) * S(3), -C(2) * S(3); ...
+                   -S(1) * S(3) - C(1) * C(3) * S(2),  C(1) * S(3) - C(3) * S(1) * S(2), -C(2) * C(3); ...
+                    C(1) * C(2)                     ,  C(2) * S(1)                     , -S(2)       ];
         end
 
         function value = get.fullmodel(cam)
@@ -161,48 +165,82 @@ classdef camera
             cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
         end
 
-        function [uv,depth,inframe] = project(cam,xyz)
-            % project the xyz world coordinates into image coordinates (uv)
+        function value = get.K(cam)
+          value = [cam.f(1) 0 cam.c(1); 0 cam.f(2) cam.c(2); 0 0 1];
+        end
+
+        function [uv, depth, inframe] = project(cam, xyz)
+            % PROJECT Project 3D world coordinates into 2D image coordinates.
             %
-            % [uv,depth,inframe]=cam.project(xyz)
+            %   [uv, depth, inframe] = cam.project(xyz)
             %
             % Inputs:
-            %    xyz: world coordinates
+            %    xyz – world coordinates [x1 y1 z1; x2 y2 z2; ...]
             %
             % Outputs:
-            %    uv: pixel coordinates in image
-            %    depth: view depth
-            %    inframe: boolean vector containing whether each projected
-            %    3d point is inside the frame.
-            %
-            if size(xyz,2)>3
-                xyz=xyz';
-            end
-            xyz=bsxfun(@minus,xyz,cam.xyz);
-            xyz=xyz*cam.R';
-            xy=bsxfun(@rdivide,xyz(:,1:2),xyz(:,3));
-            if any(cam.k~=0)||any(cam.p~=0) %TODO:optimize further
-                r2=sum(xy.^2,2);
-                r2(r2>4)=4;
-                if any(cam.k(3:6)~=0)
-                    a=(1+cam.k(1)*r2+cam.k(2)*r2.^2+cam.k(3)*r2.^3)./(1+cam.k(4)*r2+cam.k(5)*r2.^2+cam.k(6)*r2.^3);
-                else
-                    a=(1+cam.k(1)*r2+cam.k(2)*r2.^2+cam.k(3)*r2.^3);
-                end
-                xty=xy(:,1).*xy(:,2);
-                xy=[a.*xy(:,1)+2*cam.p(1)*xty+cam.p(2)*(r2+2*xy(:,1).^2), a.*xy(:,2)+2*cam.p(1)*xty+cam.p(2)*(r2+2*xy(:,2).^2)];
-            end
-            uv=[cam.f(1)*xy(:,1)+cam.c(1) cam.f(2)*xy(:,2)+cam.c(2)];
-            uv(xyz(:,3)<=0,:)=nan;
+            %    uv – image coordinates [u1 v1; u2 v2; ...]
+            %    depth – distance of each point from the camera
+            %    inframe – boolean whether each point is in the image
 
-            if nargout>1
-                depth=xyz(:,3);
+            if size(xyz, 2) > 3
+                xyz = xyz';
             end
-            if nargout>2
-                inframe=(depth>0)&(uv(:,1)>=1)&(uv(:,2)>=1)&(uv(:,1)<=cam.imgsz(2))&(uv(:,2)<=cam.imgsz(1)); %todo: additional constraint for negative k1 and r2>1. (See orthorectification example)
+
+            % Convert to camera coordinates
+            xyz = bsxfun(@minus, xyz, cam.xyz);
+            xyz = xyz * cam.R';
+
+            % Normalize by perspective division
+            xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
+
+            % Apply lens distortion
+            % TODO: Skip for xyz(:, 3) <= 0?
+            if any([cam.k, cam.p] ~= 0)
+              % r = sqrt(x^2 + y^2)
+              r2 = sum(xy.^2, 2);
+              if any(cam.k ~= 0)
+                % Radial lens distortion
+                % dr = (1 + k1 * r^2 + k2 * r^4 + k3 * r^6) / (1 + k4 * r^2 + k5 * r^4 + k6 * r^6)
+                dr = 1 + (cam.k(1) * r2 + cam.k(2) * r2.^2 + cam.k(3) * r2.^3);
+                if any(cam.k(4:6) ~= 0)
+                  dr = dr ./ (1 + cam.k(4) * r2 + cam.k(5) * r2.^2 + cam.k(6) * r2.^3);
+                end
+              end
+              if any(cam.p ~= 0)
+                % Tangential lens distortion
+                % dtx = 2xy * p1 + p2 * (r^2 + 2x^2)
+                % dty = p1 * (r^2 + 2y^2) + 2xy * p2
+                xty = xy(:, 1) .* xy(:, 2);
+                dtx = 2 * xty * cam.p(1) + cam.p(2) * (r2 + 2 * xy(:, 1).^2);
+                dty = cam.p(1) * (r2 + 2 * xy(:, 2).^2) + 2 * xty * cam.p(2);
+              end
+              % Compute distorted camera coordinates
+              % x' = dr * x + dtx
+              % y' = dr * y + dty
+              if any(cam.k ~= 0)
+                xy = bsxfun(@times, xy, dr);
+              end
+              if any(cam.p ~= 0)
+                xy = xy + [dtx dty];
+              end
+            end
+
+            % Convert to image coordinates
+            % [x', y'] = [fx * x + cx, fy * y + cy]
+            uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
+
+            % Set points behind camera to NaN
+            uv(xyz(:, 3) <= 0, :) = NaN;
+
+            if nargout > 1
+              depth = xyz(:, 3);
+            end
+            if nargout > 2
+              inframe = (depth > 0) & (uv(:, 1) >= 0.5) & (uv(:, 1) <= cam.imgsz(2) + 0.5) & (uv(:, 2) >= 0.5) & (uv(:, 2) <= cam.imgsz(1) + 0.5); % TODO: additional constraint for negative k1 and r2>1. (See orthorectification example)
             end
         end
 
+        % TODO: Add plane intersection
         function xyz=invproject(cam,uv,X,Y,Z,xy0)
             % Inverse projection from 2d to 3d coordinates. (pixel->world)
             %
