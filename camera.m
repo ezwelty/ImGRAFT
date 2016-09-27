@@ -51,22 +51,27 @@
 % TODO: Reverse directions of yaw and pitch angles.
 % TODO: Use degrees for yaw, pitch, and roll angles.
 % TODO: Reverse imgsz [y, x] to [x, y].
+% TODO: Split out DEM intersection function into private method.
+% TODO: Make DEM a class?
+% TODO: Limit voxelviewshed to camera view (not just position)
 
 classdef camera
 
   properties
-    xyz = [0 0 0];
-    imgsz = [100 100];
-    viewdir = [0 0 0];
-    f = [5000 5000];
-    c = [50 50];
-    k = [0 0 0 0 0 0];
-    p = [0 0];
+    xyz
+    viewdir
+    f
+    c
+    k
+    p
+    imgsz
+    sensorsz
   end
 
   properties (Dependent)
     R
     K
+    fmm
     fullmodel
   end
 
@@ -77,11 +82,11 @@ classdef camera
       %
       % There are three ways to call this method –
       %
-      % 1. Specify all camera parameters as a list:
+      % 1. Specify camera parameters as a list:
       %
       %   cam = camera(xyz, imgsz, viewdir, f, c, k, p)
       %
-      % 2. Specify all camera parameters as a 20-element (fullmodel) vector:
+      % 2. Specify camera parameters as a 20-element or shorter (fullmodel) vector:
       %
       %   cam = camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
       %
@@ -90,43 +95,43 @@ classdef camera
       %   cam = camera()
       %   cam.viewdir = [pi 0 0]; % look west
 
-      % No arguments: return default camera
-      if nargin == 0, return, end
+      % Single vector argument: build camera from fullmodel vector
+      if nargin == 1 & isnumeric(varargin{1}), cam.fullmodel = varargin{1}; end
 
-      % Single argument: build camera from fullmodel vector
-      if nargin == 1, cam.fullmodel = varargin{1}; end
+      % All other cases: set and validate camera parameters individually
+      p = inputParser;
+      p.CaseSensitive = false;
+      p.StructExpand = true;
+      p.addOptional('xyz', [0 0 0], @(x) isnumeric(x) && length(x) <= 3);
+      p.addOptional('imgsz', [100 100], @(x) isnumeric(x) && length(x) == 2);
+      p.addOptional('viewdir', [0 0 0], @(x) isnumeric(x) && length(x) <= 3);
+      p.addOptional('f', [5000 5000], @(x) isnumeric(x) && length(x) <= 2);
+      p.addOptional('c', [], @(x) isnumeric(x) && length(x) == 2);
+      p.addOptional('k', [0 0 0 0 0 0], @(x) isnumeric(x) && length(x) <= 6);
+      p.addOptional('p', [0 0], @(x) isnumeric(x) && length(x) <= 2);
+      p.addOptional('sensorsz', [], @(x) isnumeric(x) && length(x) == 2);
+      p.parse(varargin{:});
 
-      % Multiple arguments: set and validate camera parameters individually
-      if nargin > 1
-
-        % Set parameters
-        cam.xyz = varargin{1};
-        cam.imgsz = varargin{2};
-        if nargin >= 3, cam.viewdir = varargin{3}; end
-        if nargin >= 4, cam.f = varargin{4}; end
-        if nargin >= 5, cam.c = varargin{5}; end
-        if nargin >= 6, cam.k = varargin{6}; end
-        if nargin >= 7, cam.p = varargin{7}; end
-
-        % Validate parameters
-        % xyz: 3-element vector, default = 0
-        cam.xyz(end + 1:3) = 0; cam.xyz(4:end) = [];
-        % imgsz: 2-element vector, no default
-        if length(cam.imgsz) < 2, error('Image size (imgsz) must have two elements.'); end
-        cam.imgsz(3:end)=[];
-        % viewdir: 3-element vector, default = 0
-        cam.viewdir(end + 1:3) = 0; cam.viewdir(4:end) = [];
-        % f: 2-element vector, no default, expand [f] to [f, f]
-        cam.f(end + 1:2) = cam.f(end); cam.f(3:end) = [];
-        % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
-        if length(cam.c) < 2, error('Camera center (c) must have two elements.'); end
-        if isempty(cam.c) || nargin < 5, cam.c = (cam.imgsz([2 1]) + 1)/2; end
-        cam.c(3:end) = [];
-        % k: 6-element vector, default = 0
-        cam.k(end + 1:6) = 0; cam.k(7:end) = [];
-        % p: 2-element vector, default = 0
-        cam.p(end + 1:2) = 0; cam.p(3:end) = [];
+      % Set parameters
+      for field = fieldnames(p.Results)'
+        cam.(field{1}) = p.Results.(field{1});
       end
+
+      % Validate parameters
+      % xyz: 3-element vector, default = 0
+      cam.xyz(end:3) = 0;
+      % imgsz: 2-element vector, no default
+      % viewdir: 3-element vector, default = 0
+      cam.viewdir(end:3) = 0;
+      % f: 2-element vector, no default, expand [f] to [f, f]
+      if length(cam.f) == 1, cam.f(end + 1) = cam.f(end);
+      % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
+      if isempty(cam.c), cam.c = (cam.imgsz([2 1]) + 1) / 2; end
+      % k: 6-element vector, default = 0
+      cam.k(end:6) = 0;
+      % p: 2-element vector, default = 0
+      cam.p(end:2) = 0;
+      % sensorsz: 2-element vector, no default
     end
 
     function value = get.R(cam)
@@ -169,6 +174,22 @@ classdef camera
       value = [cam.f(1) 0 cam.c(1); 0 cam.f(2) cam.c(2); 0 0 1];
     end
 
+    function cam = set.fmm(cam, value)
+      if (isempty(cam.sensorsz))
+        error('Camera sensor size not set.')
+      else
+        cam.f = value .* cam.imgsz([2 1]) ./ cam.sensorsz;
+      end
+    end
+
+    function value = get.fmm(cam)
+      if (isempty(cam.sensorsz))
+        error('Camera sensor size not set.')
+      else
+        value = cam.f .* cam.sensorsz ./ cam.imgsz([2 1]);
+      end
+    end
+
     function [uv, depth, inframe] = project(cam, xyz)
       % PROJECT Project 3D world coordinates into 2D image coordinates.
       %
@@ -183,7 +204,7 @@ classdef camera
       %    inframe – boolean whether each point is in the image
 
       if size(xyz, 2) > 3
-          xyz = xyz';
+        xyz = xyz';
       end
 
       % Convert to camera coordinates
@@ -202,20 +223,17 @@ classdef camera
       % (set points behind camera to NaN)
       uv = nan(size(xy));
       uv(infront, :) = [cam.f(1) * xy(infront, 1) + cam.c(1), cam.f(2) * xy(infront, 2) + cam.c(2)];
-      
+
       if nargout > 1
         depth = xyz(:, 3);
       end
       if nargout > 2
-        % TODO: additional constraint for negative k1 and r2>1. (See orthorectification example) NOTE: Why? Either point is in the frame or not.
+        % TODO: additional constraint for negative k1 and r2>1. (See orthorectification example) NOTE: Why? A point is either in or out of the image frame.
         inframe = (depth > 0) & (uv(:, 1) >= 0.5) & (uv(:, 1) <= cam.imgsz(2) + 0.5) & (uv(:, 2) >= 0.5) & (uv(:, 2) <= cam.imgsz(1) + 0.5);
       end
     end
 
-    % TODO: Add plane intersection
-    % TODO: Split out intersect DEM into private method.
-    % TODO: Make DEM a class.
-    function xyz = invproject(cam, uv, X, Y, Z, xy0)
+    function xyz = invproject(cam, uv, S, version)
         % INVPROJECT Project 2D image coordinates into 3D world coordinates.
         %
         %   xyz = cam.invproject(uv)
@@ -259,75 +277,89 @@ classdef camera
           uv(nanix, :) = [];
         end
 
+        npts = size(uv, 1);
+
+        % Convert to normalized camera coordinates
+        % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
+        xy = [(uv(:, 1) - cam.c(1)) / cam.f(1), (uv(:, 2) - cam.c(2)) / cam.f(2)];
+        xy = cam.undistort(xy);
+        % Convert to ray direction vectors [dx dy dz]
+        v = [xy ones(npts, 1)] * cam.R;
+
         if nargin == 2
-           xyz = [(uv(:,1) - cam.c(1)) / cam.f(1), (uv(:,2) - cam.c(2)) / cam.f(2)];
-           xyz = cam.undistort(xyz);
-           xyz(:, 3) = 1; % depth
-           xyz = xyz * cam.R;
-           xyz = bsxfun(@plus, xyz, cam.xyz);
-        else
-            visible = voxelviewshed(X, Y, Z, cam.xyz);
-            Z = Z ./ visible;
-            xyz = nan(size(uv, 1), 3);
-            if nargin < 6
-                [uv0,~,inframe]=cam.project([X(visible(:)),Y(visible(:)),Z(visible(:))]);
-                uv0(:,3)=X(visible(:));
-                uv0(:,4)=Y(visible(:));
-                uv0(:,5)=Z(visible(:));
-                uv0=uv0(inframe,:);
-                if exist('scatteredInterpolant','file')>1
-                    Xscat=scatteredInterpolant(uv0(:,3),uv0(:,4),uv0(:,3));
-                    Xscat.Points=uv0(:,1:2);
-                    Yscat=Xscat; Yscat.Values=uv0(:,4);
-                    Zscat=Xscat; Zscat.Values=uv0(:,5);
-                else
-                    %fallback for older versions of matlab.
-                    Xscat=TriScatteredInterp(uv0(:,3),uv0(:,4),uv0(:,3));  %#ok<REMFF1>
-                    Xscat.X=uv0(:,1:2);
-                    Yscat=Xscat; Yscat.V=uv0(:,4);
-                    Zscat=Xscat; Zscat.V=uv0(:,5);
-                end
-                xy0=[Xscat(uv(:,1),uv(:,2)) Yscat(uv(:,1),uv(:,2)) Zscat(uv(:,1),uv(:,2))];
-                xyz=xy0;
+          % No surface: Return points along rays ~ unit distance from camera
+          % v = bsxfun(@rdivide, v, sqrt(sum(v.^2, 2))); % force unit distance (slower)
+          xyz = bsxfun(@plus, v, cam.xyz);
 
-                if anynans
-                    xyz(find(~nanix),:)=xyz; %find necessary because it ensures that xyz can grow.
-                    xyz(find(nanix),:)=nan;
-                end
-                return
-            end
+        elseif nargin > 2 && isnumeric(S) && length(S) == 4
+          % Plane: Return intersection of rays with plane
+          xyz = intersectRayPlane(cam.xyz, v, S);
 
-            if Y(2,2)<Y(1,1)
-                X=flipud(X);Y=flipud(Y);Z=flipud(Z);
-            end
-            if X(2,2)<X(1,1)
-                X=fliplr(X);Y=fliplr(Y);Z=fliplr(Z);
-            end
+        elseif nargin > 2 && isstruct(S)
+          % DEM: Return intersection of rays with DEM
+          [X, Y, Z] = deal(S.cx, S.cy, S.z);
+          visible = voxelviewshed(X, Y, Z, cam.xyz);
+          Z = Z ./ visible;
+          xyz = nan(npts, 3);
+          if 1
+              [uv0,~,inframe]=cam.project([X(visible(:)),Y(visible(:)),Z(visible(:))]);
+              uv0(:,3)=X(visible(:));
+              uv0(:,4)=Y(visible(:));
+              uv0(:,5)=Z(visible(:));
+              uv0=uv0(inframe,:);
+              if exist('scatteredInterpolant','file')>1
+                  Xscat=scatteredInterpolant(uv0(:,3),uv0(:,4),uv0(:,3));
+                  Xscat.Points=uv0(:,1:2);
+                  Yscat=Xscat; Yscat.Values=uv0(:,4);
+                  Zscat=Xscat; Zscat.Values=uv0(:,5);
+              else
+                  %fallback for older versions of matlab.
+                  Xscat=TriScatteredInterp(uv0(:,3),uv0(:,4),uv0(:,3));  %#ok<REMFF1>
+                  Xscat.X=uv0(:,1:2);
+                  Yscat=Xscat; Yscat.V=uv0(:,4);
+                  Zscat=Xscat; Zscat.V=uv0(:,5);
+              end
+              xy0=[Xscat(uv(:,1),uv(:,2)) Yscat(uv(:,1),uv(:,2)) Zscat(uv(:,1),uv(:,2))];
+              xyz=xy0;
 
-            if exist('griddedInterpolant','file')>1
-                zfun=griddedInterpolant(X',Y',Z'); %TODO: improve robustness.
-            else
-                %fallback for older versions of matlab. slower
-                zfun=@(x,y)interp2(X,Y,Z,x,y);
-            end
-            for ii=1:length(uv)
-                %misfit=@(xy)sum((cam.project([xy zfun(xy(1),xy(2))])-uv(ii,1:2)).^2);
-                misfitlm=@(xy)(cam.project([xy(:)' zfun(xy(1),xy(2))])-uv(ii,1:2))'.^2;
-                try
-                    %[xyz(ii,1:2),err]=fminunc(misfit,xy0(ii,1:2),optimset('LargeScale','off','Display','off','TolFun',0.001)); %TODO: remove dependency. can i use LMFnlsq?
-                    xyz(ii,1:2)=LMFnlsq(misfitlm,xy0(ii,1:2));
-                    xyz(ii,3)=zfun(xyz(ii,1),xyz(ii,2));
-                    if sum(misfitlm(xyz(ii,1:2)))>2^2
-                        xyz(ii,:)=nan; %do not accept greater than 2 pixel error.
-                    end
-                catch
-                end
-            end
+              if anynans
+                  xyz(find(~nanix),:)=xyz; %find necessary because it ensures that xyz can grow.
+                  xyz(find(nanix),:)=nan;
+              end
+              return
+          end
 
+          if Y(2,2)<Y(1,1)
+              X=flipud(X);Y=flipud(Y);Z=flipud(Z);
+          end
+          if X(2,2)<X(1,1)
+              X=fliplr(X);Y=fliplr(Y);Z=fliplr(Z);
+          end
+
+          if exist('griddedInterpolant','file')>1
+              zfun=griddedInterpolant(X',Y',Z'); %TODO: improve robustness.
+          else
+              %fallback for older versions of matlab. slower
+              zfun=@(x,y)interp2(X,Y,Z,x,y);
+          end
+          for ii=1:length(uv)
+              %misfit=@(xy)sum((cam.project([xy zfun(xy(1),xy(2))])-uv(ii,1:2)).^2);
+              misfitlm=@(xy)(cam.project([xy(:)' zfun(xy(1),xy(2))])-uv(ii,1:2))'.^2;
+              try
+                  %[xyz(ii,1:2),err]=fminunc(misfit,xy0(ii,1:2),optimset('LargeScale','off','Display','off','TolFun',0.001)); %TODO: remove dependency. can i use LMFnlsq?
+                  xyz(ii,1:2)=LMFnlsq(misfitlm,xy0(ii,1:2));
+                  xyz(ii,3)=zfun(xyz(ii,1),xyz(ii,2));
+                  if sum(misfitlm(xyz(ii,1:2)))>2^2
+                      xyz(ii,:)=nan; %do not accept greater than 2 pixel error.
+                  end
+              catch
+              end
+          end
         end
+
         if anynans
-            xyz(find(~nanix),:)=xyz; %find necessary because it ensures that xyz can grow.
-            xyz(find(nanix),:)=nan;
+            xyz(find(~nanix), :) = xyz; % find() necessary because it ensures that xyz can grow.
+            xyz(find(nanix), :) = NaN;
         end
     end
 
@@ -455,6 +487,10 @@ classdef camera
 
       if any([cam.k, cam.p] ~= 0)
 
+        if cam.k(1) < -0.5
+          warning(['Large, negative k1 (', num2str(cam.k(1), 3), '). Undistort may fail.'])
+        end
+
         % If only k1 is nonzero, use closed form solution
         % Cubic roots solution from Numerical Recipes in C 2nd Ed. pages 184-185.
         % (c) Jean-Yves Bouguet - April 27th, 1998
@@ -462,11 +498,8 @@ classdef camera
           ph = atan2(xy(:, 2), xy(:, 1));
           Q = -1 / (3 * cam.k(1));
           R = -xy(:, 1) ./ (2 * cam.k(1) * cos(ph));
-          % For (small) negative k1
+          % For negative k1
           if cam.k(1) < 0
-            if cam.k(1) < -0.2
-              warning('Large, negative k1. Undistort may fail.')
-            end
             th = acos(R ./ sqrt(Q^3));
             r = -2 * sqrt(Q) * cos((th - 2 * pi) / 3);
           % For positive k1
