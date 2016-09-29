@@ -1,61 +1,71 @@
-%% camera class - a distorted camera model.
-%
-% This class is an implementation of a distorted camera model.
-% Note: Uses <http://docs.opencv.org/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html the same distorted camera model as OpenCV>.
-%
-% camera Intrinsic parameters:
-%  imgsz   - size of image in pixels [rows|height, columns|width] NOTE: y, x
-%  f       - focal length in pixel units [f] or [fx, fy]
-%  c       - camera center in pixel coordinates [cx, cy]
-%  k       - radial distortion coefficients [k1...k6]
-%  p       - tangential distortion coefficients [p1, p2]
-%  xyz     - camera position [x, y, z]
-%  viewdir - camera view direction in radians [yaw, pitch, roll]
-%            yaw: counterclockwise rotation about z-axis (0 = look east)
-%            pitch: rotation from horizon (+ look down, - look up)
-%            roll: rotation about optical axis (+ down right, - down left, from behind)
-%
-% camera Derived parameters:
-%  R         - rotation matrix calculated from camera view direction (read only)
-%  K         - camera matrix [fx 0 cx; 0 fy cy; 0 0 1] (read only)
-%  fullmodel - 20-element vector containing all camera parameters
-%              [xyz(1:3), imgsz(1:2), viewdir(1:3), f(1:2), c(1:2), k(1:6), p(1:2)]
-%
-% camera Methods:
-%  camera      - constructor
-%  optimizecam - optimize camera parameters to mimimize pixel distances between projected world coordinates and associated image coordinates
-%  project     - project world coordinates to image coordinates (3D -> 2D)
-%  invproject  - project image coordinates to world coordinates (2D -> 3D)
-%
-% ImGRAFT - An image georectification and feature tracking toolbox for MATLAB
-% Copyright (C) 2014 Aslak Grinsted (<www.glaciology.net glaciology.net>)
-
-% Permission is hereby granted, free of charge, to any person obtaining a copy
-% of this software and associated documentation files (the "Software"), to deal
-% in the Software without restriction, including without limitation the rights
-% to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-% copies of the Software, and to permit persons to whom the Software is
-% furnished to do so, subject to the following conditions:
-%
-% The above copyright notice and this permission notice shall be included in
-% all copies or substantial portions of the Software.
-%
-% THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-% IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-% FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-% AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-% LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-% OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-% THE SOFTWARE.
-
-% TODO: Reverse directions of yaw and pitch angles.
-% TODO: Use degrees for yaw, pitch, and roll angles.
-% TODO: Reverse imgsz [y, x] to [x, y].
-% TODO: Split out DEM intersection function into private method.
-% TODO: Make DEM a class?
-% TODO: Limit voxelviewshed to camera view (not just position)
-
 classdef camera
+  % camera Distorted camera model
+  %
+  % This class is an implementation of the distorted camera model used by OpenCV:
+  % http://docs.opencv.org/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html
+  %
+  % Note: Pixel coordinates are defined such that [1, 1] is the center of the
+  % upper left pixel of the image and [nx, ny] is the center of the lower right
+  % pixel, where nx and ny are the width and height of the image. As a result,
+  % the image extends from [0.5, 0.5] to [nx + 0.5, ny + 0.5] and the center is
+  % at [(nx + 1) / 2, (ny + 1) / 2].
+  %
+  % camera Properties:
+  % imgsz    - Size of image in pixels [ny|rows|height, nx|columns|width]
+  % f        - Focal length in pixels [fx, fy]
+  % c        - Camera center coordinates in pixels [cx, cy]
+  % k        - Radial distortion coefficients [k1, ..., k6]
+  % p        - Tangential distortion coefficients [p1, p2]
+  % xyz      - Camera position in world coordinates [x, y, z]
+  % viewdir  - Camera view direction in radians [yaw, pitch, roll]
+  %            yaw: counterclockwise rotation about z-axis (0 = look east)
+  %            pitch: rotation from horizon (+ look down, - look up)
+  %            roll: rotation about optical axis (+ down right, - down left, from behind)
+  % sensorsz - Size of camera sensor in mm [width, height] (optional)
+  %
+  % camera Properties (dependent):
+  % fullmodel - Vector containing all 20 camera parameters
+  %             [xyz(1:3), imgsz(1:2), viewdir(1:3), f(1:2), c(1:2), k(1:6), p(1:2)]
+  % fmm       - Focal length in mm [fx, fy] (not set unless sensorsz is defined)
+  % R         - Rotation matrix corresponding to camera view direction (read-only)
+  % K         - Camera matrix [fx 0 cx; 0 fy cy; 0 0 1] (read-only)
+  %
+  % camera Methods:
+  % camera      - Construct a new camera object
+  % project     - Project world coordinates to image coordinates (3D -> 2D)
+  % invproject  - Project image coordinates to world coordinates (2D -> 3D)
+  % optimizecam - Optimize camera parameters to mimimize the distance between
+  %               projected world coordinates and their expected image coordinates
+  %
+  % ImGRAFT - An image georectification and feature tracking toolbox for MATLAB
+  % Copyright (C) 2014 Aslak Grinsted (<www.glaciology.net glaciology.net>)
+
+  % Permission is hereby granted, free of charge, to any person obtaining a copy
+  % of this software and associated documentation files (the "Software"), to deal
+  % in the Software without restriction, including without limitation the rights
+  % to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  % copies of the Software, and to permit persons to whom the Software is
+  % furnished to do so, subject to the following conditions:
+  %
+  % The above copyright notice and this permission notice shall be included in
+  % all copies or substantial portions of the Software.
+  %
+  % THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  % IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  % FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  % AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  % LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  % OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  % THE SOFTWARE.
+
+  % TODO: Reverse directions of yaw and pitch angles.
+  % TODO: Use degrees for yaw, pitch, and roll angles.
+  % TODO: Reverse imgsz [ny, nx] to [nx, ny].
+  % TODO: Split out DEM intersection function into DEM class method.
+  % TODO: Limit voxelviewshed to camera view (not just position)
+  % TODO: Remove imgsz from fullmodel (since not needed in optimization)
+  % TODO: Clean up optimizecam. Add support for named arguments.
+  % TODO: Extend optimizecam to work with camera bundle.
 
   properties
     xyz
@@ -78,25 +88,37 @@ classdef camera
   methods
 
     function cam = camera(varargin)
-      % CAMERA Construct a new camera object.
+      % CAMERA  Construct a new camera object.
       %
-      % There are three ways to call this method –
+      % There are several ways to call this method -
       %
-      % 1. Specify camera parameters as a list:
-      %
-      %   cam = camera(xyz, imgsz, viewdir, f, c, k, p)
-      %
-      % 2. Specify camera parameters as a 20-element or shorter (fullmodel) vector:
-      %
-      %   cam = camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
-      %
-      % 3. Initialize with default parameters, then edit individual parameters:
+      % 1. Initialize with default parameters, then edit individual parameters:
       %
       %   cam = camera()
-      %   cam.viewdir = [pi 0 0]; % look west
+      %   cam.viewdir = [pi 0 0] % look west
+      %
+      % 2. Specify camera parameters as a list:
+      %
+      %   cam = camera(xyz, imgsz, viewdir, f, c, k, p, sensorsz)
+      %
+      % 3. Specify camera parameters as named arguments:
+      %
+      %   cam = camera('xyz', [0 0 10], 'viewdir', [pi 0 0])
+      %
+      % 4. Specify camera parameters in a structure with matching field names:
+      %
+      %   S.xyz = [0 0 10]; S.viewdir = [pi 0 0];
+      %   cam = camera(S)
+      %
+      % 5. Specify camera parameters as a 20-element or shorter (fullmodel) vector:
+      %
+      %   cam = camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
 
       % Single vector argument: build camera from fullmodel vector
-      if nargin == 1 & isnumeric(varargin{1}), cam.fullmodel = varargin{1}; end
+      if nargin == 1 && isnumeric(varargin{1})
+        cam.fullmodel = varargin{1};
+        return
+      end
 
       % All other cases: set and validate camera parameters individually
       p = inputParser;
@@ -110,6 +132,13 @@ classdef camera
       p.addOptional('k', [0 0 0 0 0 0], @(x) isnumeric(x) && length(x) <= 6);
       p.addOptional('p', [0 0], @(x) isnumeric(x) && length(x) <= 2);
       p.addOptional('sensorsz', [], @(x) isnumeric(x) && length(x) == 2);
+      % HACK: Removes non-matching field names from structure
+      if isstruct(varargin{1})
+        fields = fieldnames(varargin{1});
+        values = struct2cell(varargin{1});
+        include = ismember(fields, p.Parameters);
+        varargin{1} = cell2struct(values(include), fields(include));
+      end
       p.parse(varargin{:});
 
       % Set parameters
@@ -119,18 +148,18 @@ classdef camera
 
       % Validate parameters
       % xyz: 3-element vector, default = 0
-      cam.xyz(end:3) = 0;
+      cam.xyz(end+1:3) = 0;
       % imgsz: 2-element vector, no default
       % viewdir: 3-element vector, default = 0
-      cam.viewdir(end:3) = 0;
+      cam.viewdir(end+1:3) = 0;
       % f: 2-element vector, no default, expand [f] to [f, f]
-      if length(cam.f) == 1, cam.f(end + 1) = cam.f(end);
+      if length(cam.f) == 1, cam.f(end + 1) = cam.f(end); end
       % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
       if isempty(cam.c), cam.c = (cam.imgsz([2 1]) + 1) / 2; end
       % k: 6-element vector, default = 0
-      cam.k(end:6) = 0;
+      cam.k(end+1:6) = 0;
       % p: 2-element vector, default = 0
-      cam.p(end:2) = 0;
+      cam.p(end+1:2) = 0;
       % sensorsz: 2-element vector, no default
     end
 
@@ -145,11 +174,11 @@ classdef camera
 
       % View direction rotations
       C = cos(cam.viewdir); S = sin(cam.viewdir);
-      % yaw: clockwise rotation about y-axis (relative to east, from above: + ccw, - cw) NOTE: - ccw, +cw
+      % yaw: clockwise rotation about y-axis (relative to east, from above: + ccw, - cw)
       %   ry = [C(1) 0 S(1); 0 1 0; -S(1) 0 C(1)];
-      % pitch: clockwise rotation about x-axis (relative to horizon: - up, + down) NOTE: - ccw, +cw
+      % pitch: clockwise rotation about x-axis (relative to horizon: - up, + down)
       %   rp = [1 0 0; 0 C(2) -S(2); 0 S(2) C(2)];
-      % roll: counterclockwise rotation about z-axis, (from behind camera: + ccw, - cw)
+      % roll: counterclockwise rotation about z-axis (from behind camera: + ccw, - cw)
       %   rr = [C(3) S(3) 0; -S(3) C(3) 0; 0 0 1];
 
       % Apply all rotations in order
@@ -191,21 +220,19 @@ classdef camera
     end
 
     function [uv, depth, inframe] = project(cam, xyz)
-      % PROJECT Project 3D world coordinates into 2D image coordinates.
+      % PROJECT  Project 3D world coordinates to 2D image coordinates.
       %
       %   [uv, depth, inframe] = cam.project(xyz)
       %
       % Inputs:
-      %    xyz – world coordinates [x1 y1 z1; x2 y2 z2; ...]
+      %   xyz - World coordinates [x1 y1 z1; x2 y2 z2; ...]
       %
       % Outputs:
-      %    uv – image coordinates [u1 v1; u2 v2; ...]
-      %    depth – distance of each point from the camera
-      %    inframe – boolean whether each point is in the image
-
-      if size(xyz, 2) > 3
-        xyz = xyz';
-      end
+      %   uv      - Image coordinates [u1 v1; u2 v2; ...]
+      %   depth   - Distance of each point from the camera
+      %   inframe - Boolean whether each point is in the image
+      %
+      % See also: camera.invproject
 
       % Convert to camera coordinates
       xyz = bsxfun(@minus, xyz, cam.xyz);
@@ -228,13 +255,13 @@ classdef camera
         depth = xyz(:, 3);
       end
       if nargout > 2
-        % TODO: additional constraint for negative k1 and r2>1. (See orthorectification example) NOTE: Why? A point is either in or out of the image frame.
+        % TODO: additional constraint for negative k1 and r2 > 1. (See orthorectification example) NOTE: Why? A point is either in or out of the image frame.
         inframe = (depth > 0) & (uv(:, 1) >= 0.5) & (uv(:, 1) <= cam.imgsz(2) + 0.5) & (uv(:, 2) >= 0.5) & (uv(:, 2) <= cam.imgsz(1) + 0.5);
       end
     end
 
-    function xyz = invproject(cam, uv, S, version)
-        % INVPROJECT Project 2D image coordinates into 3D world coordinates.
+    function xyz = invproject(cam, uv, S, xy0)
+        % INVPROJECT  Project 2D image coordinates into 3D world coordinates.
         %
         %   xyz = cam.invproject(uv)
         %   xyz = cam.invproject(uv, X, Y, Z)
@@ -301,7 +328,7 @@ classdef camera
           visible = voxelviewshed(X, Y, Z, cam.xyz);
           Z = Z ./ visible;
           xyz = nan(npts, 3);
-          if 1
+          if nargin < 4
               [uv0,~,inframe]=cam.project([X(visible(:)),Y(visible(:)),Z(visible(:))]);
               uv0(:,3)=X(visible(:));
               uv0(:,4)=Y(visible(:));
@@ -364,8 +391,8 @@ classdef camera
     end
 
 
-    function [result,rmse,AIC]=optimizecam(cam,xyz,uv,freeparams)
-        % Tune the camera so that projecting xyz results in uv (least squares)
+    function [result, rmse, AIC] = optimizecam(cam, xyz, uv, freeparams)
+        % OPTIMIZECAM  Tune the camera so that projecting xyz results in uv (least squares)
         %
         % [newcamera,rmse,AIC]=cam.optimizecam(xyz,uv,freeparams)
         %
@@ -427,9 +454,10 @@ classdef camera
         AIC=numel(uv)*log(RSS/numel(uv)) + 2*Nfree;
         result=newcam(mbest);
     end
+
   end % methods
 
-  methods
+  methods (Access = private)
 
     function xy = distort(cam, xy)
       % DISTORT  Apply radial and tangential lens distortion to normalized camera coordinates.
@@ -437,12 +465,11 @@ classdef camera
       %   xy = distort(xy)
       %
       % Inputs:
-      %   xy – Nx2 normalized camera coordinates
+      %   xy - normalized camera coordinates [x1 y1; x2 y2; ...]
       %
       % Outputs:
-      %   xy – Nx2 distorted normalized camera coordinates
+      %   xy - distorted normalized camera coordinates [x1 y1; x2 y2; ...]
 
-      % TODO: Skip for xyz(:, 3) <= 0?
       if any([cam.k, cam.p] ~= 0)
         % r = sqrt(x^2 + y^2)
         r2 = sum(xy.^2, 2);
@@ -480,24 +507,25 @@ classdef camera
       %   xy = undistort(xy)
       %
       % Inputs:
-      %   xy – Nx2 distorted normalized camera coordinates
+      %   xy - distorted normalized camera coordinates [x1 y1; x2 y2; ...]
       %
       % Outputs:
-      %   xy – Nx2 normalized camera coordinates
+      %   xy - normalized camera coordinates [x1 y1; x2 y2; ...]
 
       if any([cam.k, cam.p] ~= 0)
 
+        % May fail for large negative k1.
         if cam.k(1) < -0.5
           warning(['Large, negative k1 (', num2str(cam.k(1), 3), '). Undistort may fail.'])
         end
 
-        % If only k1 is nonzero, use closed form solution
-        % Cubic roots solution from Numerical Recipes in C 2nd Ed. pages 184-185.
-        % (c) Jean-Yves Bouguet - April 27th, 1998
+        % If only k1 is nonzero, use closed form solution.
+        % Cubic roots solution from Numerical Recipes in C 2nd Edition:
+        % http://apps.nrbook.com/c/index.html (pages 183-185)
         if sum([cam.k cam.p] ~= 0) == 1 && cam.k(1) ~= 0
-          ph = atan2(xy(:, 2), xy(:, 1));
+          phi = atan2(xy(:, 2), xy(:, 1));
           Q = -1 / (3 * cam.k(1));
-          R = -xy(:, 1) ./ (2 * cam.k(1) * cos(ph));
+          R = -xy(:, 1) ./ (2 * cam.k(1) * cos(phi));
           % For negative k1
           if cam.k(1) < 0
             th = acos(R ./ sqrt(Q^3));
@@ -508,10 +536,10 @@ classdef camera
             B = Q * (1 ./ A);
             r = (A + B);
           end
-          xy = [r .* cos(ph), r .* sin(ph)];
+          xy = [r .* cos(phi), r .* sin(phi)];
           xy = real(xy);
 
-        % Otherwise, use iterative solution
+        % Otherwise, use iterative solution.
         else
           xyi = xy; % initial guess
           for n = 1:20
@@ -549,6 +577,6 @@ classdef camera
       end
     end
 
-  end % methods (protected)
+  end % methods (private)
 
 end % classdef
