@@ -125,13 +125,13 @@ classdef camera
       p.CaseSensitive = false;
       p.StructExpand = true;
       p.addOptional('xyz', [0 0 0], @(x) isnumeric(x) && length(x) <= 3);
-      p.addOptional('imgsz', [100 100], @(x) isnumeric(x) && length(x) == 2);
+      p.addOptional('imgsz', [100 100], @(x) isnumeric(x) && length(x) <= 2);
       p.addOptional('viewdir', [0 0 0], @(x) isnumeric(x) && length(x) <= 3);
-      p.addOptional('f', [5000 5000], @(x) isnumeric(x) && length(x) <= 2);
+      p.addOptional('f', [100 100], @(x) isnumeric(x) && length(x) <= 2);
       p.addOptional('c', [], @(x) isnumeric(x) && length(x) == 2);
       p.addOptional('k', [0 0 0 0 0 0], @(x) isnumeric(x) && length(x) <= 6);
       p.addOptional('p', [0 0], @(x) isnumeric(x) && length(x) <= 2);
-      p.addOptional('sensorsz', [], @(x) isnumeric(x) && length(x) == 2);
+      p.addOptional('sensorsz', [], @(x) isnumeric(x) && length(x) <= 2);
       % HACK: Removes non-matching field names from structure
       if nargin == 1 && isstruct(varargin{1})
         fields = fieldnames(varargin{1});
@@ -147,20 +147,26 @@ classdef camera
       end
 
       % Validate parameters
+      % TODO: Move to camera.set functions?
       % xyz: 3-element vector, default = 0
-      cam.xyz(end+1:3) = 0;
-      % imgsz: 2-element vector, no default
+      cam.xyz(end + 1:3) = 0;
+      % imgsz: 2-element vector, no default, expand [#] to [#, #]
+      if length(cam.imgsz) == 1, cam.imgsz(end + 1) = cam.imgsz(end); end
       % viewdir: 3-element vector, default = 0
-      cam.viewdir(end+1:3) = 0;
+      cam.viewdir(end + 1:3) = 0;
       % f: 2-element vector, no default, expand [f] to [f, f]
       if length(cam.f) == 1, cam.f(end + 1) = cam.f(end); end
       % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
-      if isempty(cam.c), cam.c = (cam.imgsz([2 1]) + 1) / 2; end
+      if isempty(cam.c) && ~isempty(cam.imgsz)
+        cam.c = (flip(cam.imgsz) + 1) / 2;
+        cam.c(flip(cam.imgsz) == 0) = 0;
+      end
       % k: 6-element vector, default = 0
-      cam.k(end+1:6) = 0;
+      cam.k(end + 1:6) = 0;
       % p: 2-element vector, default = 0
-      cam.p(end+1:2) = 0;
-      % sensorsz: 2-element vector, no default
+      cam.p(end + 1:2) = 0;
+      % sensorsz: 2-element vector, no default, expand [#] to [#, #]
+      if length(cam.sensorsz) == 1, cam.sensorsz(end + 1) = cam.sensorsz(end); end
     end
 
     function value = get.R(cam)
@@ -189,7 +195,12 @@ classdef camera
     end
 
     function value = get.fullmodel(cam)
-      value = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
+      fullmodel = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
+      if length(fullmodel) == 20
+        value = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
+      else
+        error('Camera parameters missing or not of the correct length.')
+      end
     end
 
     function cam = set.fullmodel(cam, value)
@@ -240,7 +251,7 @@ classdef camera
         cam.imgsz = round(scale(1:2));
         scale = cam.imgsz ./ imgsz0;
         if any(abs(diff(scale)) * imgsz0 > 1)
-          error(['Aspect ratio of target image size (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') too different from original (' num2str(imgsz0(1) / imgsz0(2)) ') to be accounted for by rounding.']);
+          error(['Aspect ratio of target image size (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') too different from original (' num2str(imgsz0(1) / imgsz0(2), 2) ') to be accounted for by rounding.']);
         end
       else
         cam.imgsz = round(scale * cam.imgsz);
