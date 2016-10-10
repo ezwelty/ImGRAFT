@@ -11,7 +11,7 @@ classdef camera
   % at [(nx + 1) / 2, (ny + 1) / 2].
   %
   % camera Properties:
-  % imgsz    - Size of image in pixels [ny|rows|height, nx|columns|width]
+  % imgsz    - Size of image in pixels [ny|nrows|height, nx|ncols|width]
   % f        - Focal length in pixels [fx, fy]
   % c        - Camera center coordinates in pixels [cx, cy]
   % k        - Radial distortion coefficients [k1, ..., k6]
@@ -133,7 +133,7 @@ classdef camera
       p.addOptional('p', [0 0], @(x) isnumeric(x) && length(x) <= 2);
       p.addOptional('sensorsz', [], @(x) isnumeric(x) && length(x) == 2);
       % HACK: Removes non-matching field names from structure
-      if isstruct(varargin{1})
+      if nargin == 1 && isstruct(varargin{1})
         fields = fieldnames(varargin{1});
         values = struct2cell(varargin{1});
         include = ismember(fields, p.Parameters);
@@ -205,7 +205,7 @@ classdef camera
 
     function cam = set.fmm(cam, value)
       if (isempty(cam.sensorsz))
-        error('Camera sensor size not set.')
+        error('Camera sensor size not set.');
       else
         cam.f = value .* cam.imgsz([2 1]) ./ cam.sensorsz;
       end
@@ -213,10 +213,41 @@ classdef camera
 
     function value = get.fmm(cam)
       if (isempty(cam.sensorsz))
-        error('Camera sensor size not set.')
+        error('Camera sensor size not set.');
       else
         value = cam.f .* cam.sensorsz ./ cam.imgsz([2 1]);
       end
+    end
+
+    function cam = resize(cam, scale)
+      % RESIZE  Resize a camera image.
+      %
+      %   cam = cam.resize(scale)
+      %
+      % The focal length (f) and principal point (c) are adjusted as needed to
+      % account for the change in image size (imgsz).
+      %
+      % NOTE: Since an image can only contain whole pixels, the resulting image size
+      % may not equal the target image size. Because of this rounding, calls to
+      % this function may be nonreversible.
+      %
+      % Inputs:
+      %   scale - Scale factor [s] or desired image size [ny|nrows, nx|ncols]
+
+      imgsz0 = cam.imgsz;
+      c0 = cam.c;
+      if length(scale) > 1
+        cam.imgsz = round(scale(1:2));
+        scale = cam.imgsz ./ imgsz0;
+        if any(abs(diff(scale)) * imgsz0 > 1)
+          error(['Aspect ratio of target image size (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') too different from original (' num2str(imgsz0(1) / imgsz0(2)) ') to be accounted for by rounding.']);
+        end
+      else
+        cam.imgsz = round(scale * cam.imgsz);
+        scale = cam.imgsz ./ imgsz0;
+      end
+      cam.f = cam.f .* flip(scale);
+      cam.c = ((cam.imgsz([2 1]) + 1) / 2) + (c0 - ((imgsz0([2 1]) + 1) / 2)) .* flip(scale);
     end
 
     function [uv, depth, inframe] = project(cam, xyz)
