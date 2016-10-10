@@ -1,7 +1,8 @@
-function sensorsz = sensorSize(mmakemodel)
+function sensorsz = sensorSize(varargin)
   % SENSORSIZE  Get the CCD sensor width and height of a digital camera model.
   %
   %   sensorsz = sensorSize(makemodel)
+  %   sensorsz = sensorSize(make, model)
   %
   % Returns the CCD sensor width and height in mm for the specified camera make
   % and model. Data is from Digital Photography Review (www.dpreview.com).
@@ -9,22 +10,20 @@ function sensorsz = sensorSize(mmakemodel)
   %
   % Inputs:
   %   makemodel - camera make and model [make ' ' model]
+  %   make      - camera make
+  %   model     - camera model
   %
   % Outputs:
   %   sensorsz - sensor size in mm [width height]
 
-  % Check number of arguments
+  % Check input arguments
   if (nargin < 1)
       error('Specify make & model of camera.')
   end
-
-  % Check type of arguments
-  if (~ischar(makemodel))
-      error('Camera make & model must be a character string: [Make Model]');
+  if (nargin > 1)
+    makemodel = [deblank(strtrim(varargin{1})) ' ' deblank(strtrim(varargin{2}))];
   end
 
-  % Data
-  % Camera names: [deblank(strtrim(Make)) ' ' deblank(strtrim(Model))]
   % Sensor sizes (mm)
   data = {
     'NIKON CORPORATION NIKON D2X', [23.7 15.7]; % https://www.dpreview.com/reviews/nikond2x/2
