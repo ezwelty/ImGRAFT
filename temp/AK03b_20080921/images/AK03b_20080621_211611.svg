@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 16.0.4, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 width="929.281px" height="622.08px" viewBox="0 0 929.281 622.08" enable-background="new 0 0 929.281 622.08"
+	 xml:space="preserve">
+<g id="Layer_1">
+	<g id="Layer_1_1_">
+		
+			<image overflow="visible" enable-background="new    " width="3872" height="2592" xlink:href="AK03b_20080621_211611.JPG"  transform="matrix(0.24 0 0 0.24 -4.882812e-04 0)">
+		</image>
+	</g>
+</g>
+<g id="gcp">
+	<path id="P5080" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M825.664,24.113"/>
+	<path id="CCFG003" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M542.833,563.084"/>
+	<path id="CCFG001" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M153.07,594.589"/>
+	<path id="CCFG002" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M43.417,570.917"/>
+	<path id="theodolite" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M65.083,548.75"/>
+	<path id="JNCSLDR" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M393.25,145.583"/>
+	<path id="JUNCTURE_x5F_old" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M620.75,68.5"/>
+	<path id="NJC" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M518.833,106.75"/>
+	<path id="xcrack" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M318.333,118.75"/>
+	<path id="TRIANGLEPK" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M207.875,46.125"/>
+	<path id="P7930" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M107.25,54.375"/>
+	<path id="tooth" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M52.375,54.375"/>
+	<path id="bullseye" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M230.481,110.072"/>
+	<path id="pinch" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M515.111,115.996"/>
+	<path id="jawlip" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M626.664,132.26"/>
+	<path id="alcove" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M689.511,129.874"/>
+	<path id="butt" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M812.642,143.662"/>
+	<path id="portaledge" fill="#FFFFFF" stroke="#000000" stroke-miterlimit="10" d="M910.232,128.458"/>
+</g>
+<g id="glacier">
+	<polygon fill="none" stroke="#000000" stroke-miterlimit="10" points="929.281,157 866.333,157 743.667,157 613.667,163.667 
+		551,168.333 457.667,174.333 417.667,180.333 435,171.667 447,161.667 429.667,160.333 401,157 378.333,161 378.333,157 
+		384.333,145.583 396.333,143.662 415,132.26 398.333,132.26 360.333,138.333 329,139.667 291.667,143.662 270.333,145.583 
+		259.667,153 250.333,159.667 230.481,161.667 187.667,156.297 153.07,153 130.333,149 101.667,143.662 96.333,135.667 
+		91.667,128.458 56.333,136.333 25,135 0,137.667 0,205.667 0,384.333 0,510.333 65.083,510.333 115.667,510.333 165,514.333 
+		215,529 285.667,548.75 335,567 367,573.667 409,577 431.667,591 477.667,581.667 515.111,566.333 539.667,557.667 
+		583.667,563.084 639.667,570.917 693,570.917 744.333,577 774.333,570.917 803.667,570.917 844.333,548.75 877.667,533 
+		929.281,509.667 	"/>
+</g>
+<g id="terminus">
+	<polyline fill="none" stroke="#000000" stroke-miterlimit="10" points="0,207.54 46.474,207.54 90.474,210.207 167.807,210.207 
+		246.474,210.207 315.14,217.54 360.474,226.874 378.474,230.207 385.14,237.54 385.14,260.874 366.474,279.54 318.333,306.874 
+		283.807,326.207 230.481,352.207 164.474,371.54 107.25,385.54 59.14,392.207 0,396.207 	"/>
+</g>
+</svg>
