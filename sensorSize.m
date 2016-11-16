@@ -27,6 +27,7 @@ function sensorsz = sensorSize(varargin)
   % Sensor sizes (mm)
   data = {
     'NIKON CORPORATION NIKON D2X', [23.7 15.7]; % https://www.dpreview.com/reviews/nikond2x/2
+    'NIKON CORPORATION NIKON D200', [23.6 15.8]; % https://www.dpreview.com/reviews/nikond200/2
   };
 
   % Check for match
