@@ -1,8 +1,11 @@
-classdef DEM
+% TODO: Compute x, y, X, Y only as needed, and expire instead of automatically updating.
+
+classdef DEM < handle
   % DEM Digital elevation model
   %
   % This model implements a regularly gridded digital elevation model. Read-only
-  % properties are cached for efficiency and updated only when needed.
+  % properties are cached for efficiency and updated only when needed. Hidden
+  % properties are cached and only computed when requested.
   %
   % DEM Properties:
   % Z    - Grid of values on a regular xy grid
@@ -14,7 +17,9 @@ classdef DEM
   % max   - Maximum corner of bounding box [max(x), max(y), max(z)]
   % nx,ny - Dimensions of grid
   % dx,dy - Cell size in x and y
-  % x,y   - Cell center coordinates as vectors [left to right], [top to bottom]
+  %
+  % DEM Properties (read-only and hidden):
+  % x,y   - Cell center coordinates as row vectors [left to right], [top to bottom]
   % X,Y   - Cell center coordinates as grids, equivalent to meshgrid(x, y)
   %
   % DEM Methods:
@@ -30,11 +35,14 @@ classdef DEM
   end
 
   properties (SetAccess = private)
-    x, y
-    X, Y
     nx, ny
     dx, dy
     min, max
+  end
+
+  properties (SetAccess = private, Hidden = true, GetObservable)
+    x, y
+    X, Y
   end
 
   methods
@@ -78,6 +86,18 @@ classdef DEM
         [dem.xlim, x, X] = DEM.parseXlim(varargin{2});
         [dem.ylim, y, Y] = DEM.parseYlim(varargin{3});
         dem = dem.updateX(x, X).updateY(y, Y).updateZ;
+      end
+
+      % Add listeners
+      addlistener(dem, 'x', 'PreGet', @dem.PreGetProperty);
+      addlistener(dem, 'y', 'PreGet', @dem.PreGetProperty);
+      addlistener(dem, 'X', 'PreGet', @dem.PreGetProperty);
+      addlistener(dem, 'Y', 'PreGet', @dem.PreGetProperty);
+    end
+
+    function PreGetProperty(dem, property, varargin)
+      if isempty(dem.(property.Name))
+        dem = dem.(['compute_' property.Name]);
       end
     end
 
@@ -209,8 +229,8 @@ classdef DEM
 
       % Perform clip
       cZ = dem.Z(minrow:maxrow, mincol:maxcol);
-      cxlim = interp1([0 dem.nx], dem.xlim, [mincol-1 maxcol]);
-      cylim = interp1([0 dem.ny], dem.ylim, [minrow-1 maxrow]);
+      cxlim = interp1([0 dem.nx], dem.xlim, [mincol - 1 maxcol]);
+      cylim = interp1([0 dem.ny], dem.ylim, [minrow - 1 maxrow]);
 
       % Check zlim
       if nargin > 3 && ~isempty(zlim)
@@ -219,7 +239,7 @@ classdef DEM
       end
 
       % Create clipped DEM
-      dem = DEM(cxlim, cylim, cZ);
+      dem = DEM(cZ, cxlim, cylim);
     end
 
     function dem = resize(dem, scale, method)
@@ -237,14 +257,15 @@ classdef DEM
       % See also: imresize
 
       if nargin < 3
-          method = 'bicubic';
+        method = 'bicubic';
       end
 
       % Scale grid
-      dem.Z = imresize(dem.Z, scale, method);
+      Z = imresize(dem.Z, scale, method);
+      dem = DEM(Z, dem.xlim, dem.ylim);
     end
 
-    function h = plot(dem, dim)
+    function h = plot(dem, dim, shade)
       % PLOT  Plot a DEM in 2 or 3 dimensions.
       %
       %   h = dem.plot(dim)
@@ -258,25 +279,40 @@ classdef DEM
       %   h   - Figure handle
 
       % Force scaling of large DEM for 3D plotting
-      if (dem.nx * dem.ny > 1e6 && dim > 2)
-          dem = dem.resize(sqrt(1e6 / (dem.nx * dem.ny)));
-          warning('DEM automatically downsized for stable 3D plotting')
+      if (dem.nx * dem.ny > 2e6)
+        scale = sqrt(2e6 / (dem.nx * dem.ny));
+        dem = dem.resize(scale);
+        if (nargin > 2)
+          shade = imresize(shade, scale);
+        end
+        warning('DEM automatically downsized for fast plotting')
       end
 
       % Plot DEM
-      h = figure;
-      shade = hillshade(dem.Z, dem.x, dem.y);
+      if (nargin < 3)
+        shade = hillshade(dem.Z, dem.x, dem.y);
+      end
       if (dim == 2)
-        imagesc(dem.x, dem.y, shade)
+        h = imagesc(dem.x, dem.y, shade);
         axis image
         set(gca, 'ydir', 'normal')
       elseif (dim == 3)
-        shade = hillshade(dem.Z, dem.x, dem.y);
-        surf(dem.x, dem.y, dem.Z, shade)
+        h = surf(dem.x, dem.y, dem.Z, double(shade), 'EdgeColor','none');
         shading interp
         axis equal
       end
       colormap gray
+    end
+
+    function ind = xy2ind(dem, xy)
+      xi = ceil((xy(:, 1) - dem.xlim(1)) ./ diff(dem.xlim) * dem.nx);
+      xi(xy(:, 1) == dem.xlim(1)) = 1;
+      yi = ceil((xy(:, 2) - dem.ylim(1)) ./ diff(dem.ylim) * dem.ny);
+      yi(xy(:, 2) == dem.ylim(1)) = 1;
+      nans = xi < 1 | xi > dem.nx | yi < 1 | yi > dem.ny;
+      xi(nans) = NaN;
+      yi(nans) = NaN;
+      ind = sub2ind(size(dem.Z), yi, xi);
     end
 
   end % methods
@@ -292,6 +328,9 @@ classdef DEM
         if any(value(1, 1) ~= value(:, 1)), error('X does not have all equal rows'); end
         if nargout > 2, X = value; end
         value = value(1, :);
+      end
+      if size(value, 1) > 1
+        value = reshape(value, 1, length(value));
       end
       if isgrid || isvector
         dx = diff(value);
@@ -312,6 +351,9 @@ classdef DEM
         if any(value(1, 1) ~= value(1, :)), error('Y does not have all equal rows'); end
         if nargout > 2, Y = value; end
         value = value(:, 1);
+      end
+      if size(value, 1) > 1
+        value = reshape(value, 1, length(value));
       end
       if isgrid || isvector
         dy = diff(value);
@@ -344,19 +386,27 @@ classdef DEM
       dem.max(1) = max(dem.xlim);
       dem.nx = size(dem.Z, 2);
       dem.dx = abs(diff(dem.xlim)) / dem.nx;
-      if nargin < 2 || isempty(x)
-        dem.x = (dem.min(1) + dem.dx / 2):dem.dx:(dem.max(1) - dem.dx / 2);
-        if dem.xlim(1) > dem.xlim(2)
-          dem.x = flip(dem.x);
-        end
-      else
+      if nargin > 2 && ~isempty(x)
         dem.x = x;
-      end
-      if nargin < 3 || isempty(X)
-        dem.X = repmat(dem.x, size(dem.Z, 1), 1);
       else
-        dem.X = X;
+        dem.x = [];
       end
+      if nargin > 3 && ~isempty(X)
+        dem.X = X;
+      else
+        dem.X = [];
+      end
+    end
+
+    function dem = compute_x(dem)
+      dem.x = (dem.min(1) + dem.dx / 2):dem.dx:(dem.max(1) - dem.dx / 2);
+      if dem.xlim(1) > dem.xlim(2)
+        dem.x = fliplr(dem.x);
+      end
+    end
+
+    function dem = compute_X(dem)
+      dem.X = repmat(dem.x, size(dem.Z, 1), 1);
     end
 
     function dem = updateY(dem, y, Y)
@@ -364,19 +414,27 @@ classdef DEM
       dem.max(2) = max(dem.ylim);
       dem.ny = size(dem.Z, 1);
       dem.dy = abs(diff(dem.ylim)) / dem.ny;
-      if nargin < 2 || isempty(y)
-        dem.y = (dem.min(2) + dem.dy / 2):dem.dy:(dem.max(2) - dem.dy / 2);
-        if dem.ylim(1) > dem.ylim(2)
-          dem.y = flip(dem.y);
-        end
-      else
+      if nargin > 2 && ~isempty(y)
         dem.y = y;
-      end
-      if nargin < 3 || isempty(Y)
-        dem.Y = repmat(dem.y', 1, size(dem.Z, 2));
       else
-        dem.Y = Y;
+        dem.y = [];
       end
+      if nargin > 3 && ~isempty(Y)
+        dem.Y = Y;
+      else
+        dem.Y = [];
+      end
+    end
+
+    function dem = compute_y(dem)
+      dem.y = (dem.min(2) + dem.dy / 2):dem.dy:(dem.max(2) - dem.dy / 2);
+      if dem.ylim(1) > dem.ylim(2)
+        dem.y = fliplr(dem.y);
+      end
+    end
+
+    function dem = compute_Y(dem)
+      dem.Y = repmat(dem.y', 1, size(dem.Z, 2));
     end
 
     function dem = updateZ(dem)
