@@ -66,6 +66,7 @@ classdef camera
   % TODO: Remove imgsz from fullmodel (since not needed in optimization)
   % TODO: Clean up optimizecam. Add support for named arguments.
   % TODO: Extend optimizecam to work with camera bundle.
+  % FIXME: Don't resize camera in place
 
   properties
     xyz
@@ -83,6 +84,8 @@ classdef camera
     K
     fmm
     fullmodel
+    framebox
+    framepoly
   end
 
   methods
@@ -194,6 +197,11 @@ classdef camera
                 C(1) * C(2)                     ,  C(2) * S(1)                     , -S(2)       ];
     end
 
+    function cam = set.R(cam, value)
+      oblang = rot2oblang(value);
+      cam.viewdir = [-(oblang(1) - 90) -oblang(2) oblang(3)] * pi / 180;
+    end
+
     function value = get.fullmodel(cam)
       fullmodel = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
       if length(fullmodel) == 20
@@ -228,6 +236,68 @@ classdef camera
       else
         value = cam.f .* cam.sensorsz ./ cam.imgsz([2 1]);
       end
+    end
+
+    function value = get.framebox(cam)
+      value = [0 cam.imgsz(2) 0 cam.imgsz(1)] + 0.5;
+    end
+
+    function value = get.framepoly(cam)
+      value = flipud([0 0 ; cam.imgsz(2) 0 ; cam.imgsz(2) cam.imgsz(1) ; 0 cam.imgsz(1) ; 0 0] + 0.5); % flip so cw in typical xy-space
+    end
+
+    function plot(cam, radius, color)
+      plot3(cam.xyz(1), cam.xyz(2), cam.xyz(3), 'r.'); hold on;
+      corner_uv = [0 0; cam.imgsz(2) 0; cam.imgsz([2 1]); 0 cam.imgsz(1)] + 0.5;
+      corner_xyz = cam.invproject(corner_uv);
+      directions = bsxfun(@minus, corner_xyz, cam.xyz);
+      if nargin < 2
+        radius = 1;
+      end
+      scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
+      corner_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
+      plot3(corner_xyz([1:4 1], 1), corner_xyz([1:4 1], 2), corner_xyz([1:4 1], 3), 'k-');
+      plot3([repmat(cam.xyz(1), 4, 1) corner_xyz(:, 1)]', [repmat(cam.xyz(2), 4, 1) corner_xyz(:, 2)]', [repmat(cam.xyz(3), 4, 1) corner_xyz(:, 3)]', 'k-');
+      if nargin < 3
+        color = rand(1, 3);
+      end
+      patch(corner_xyz(:, 1), corner_xyz(:, 2), corner_xyz(:, 3), color, 'FaceAlpha', 0.5);
+    end
+
+    function value = viewpyramid(cam, radius)
+      u = [0:cam.imgsz(2)]'; v = [0:cam.imgsz(1)]';
+      edge_uv = [
+        [u repmat(0, length(u), 1)];
+        [repmat(cam.imgsz(2), length(v), 1) v];
+        [flip(u) repmat(cam.imgsz(1), length(u), 1)];
+        [repmat(0, length(v), 1) flip(v)]
+      ];
+      edge_xyz = cam.invproject(edge_uv);
+      directions = bsxfun(@minus, edge_xyz, cam.xyz);
+      if nargin < 2
+        radius = 1;
+      end
+      scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
+      edge_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
+      value = [edge_xyz; cam.xyz];
+      % corner_uv = [0 0; cam.imgsz(2) 0; cam.imgsz([2 1]); 0 cam.imgsz(1)] + 0.5;
+      % corner_xyz = cam.invproject(corner_uv);
+      % directions = bsxfun(@minus, corner_xyz, cam.xyz);
+      % if nargin < 2
+      %   radius = 1;
+      % end
+      % scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
+      % corner_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
+      % value = [corner_xyz; cam.xyz];
+    end
+
+    function value = viewbox(cam, radius)
+      if nargin < 2
+        pyramid = cam.viewpyramid();
+      else
+        pyramid = cam.viewpyramid(radius);
+      end
+      value = [min(pyramid); max(pyramid)];
     end
 
     function cam = resize(cam, scale)
@@ -364,66 +434,73 @@ classdef camera
           % Plane: Return intersection of rays with plane
           xyz = intersectRayPlane(cam.xyz, v, S);
 
-        elseif nargin > 2 && isstruct(S)
+        elseif nargin > 2 && strcmp(class(S), 'DEM')
           % DEM: Return intersection of rays with DEM
-          [X, Y, Z] = deal(S.cx, S.cy, S.z);
-          visible = voxelviewshed(X, Y, Z, cam.xyz);
-          Z = Z ./ visible;
-          xyz = nan(npts, 3);
-          if nargin < 4
-              [uv0,~,inframe]=cam.project([X(visible(:)),Y(visible(:)),Z(visible(:))]);
-              uv0(:,3)=X(visible(:));
-              uv0(:,4)=Y(visible(:));
-              uv0(:,5)=Z(visible(:));
-              uv0=uv0(inframe,:);
-              if exist('scatteredInterpolant','file')>1
-                  Xscat=scatteredInterpolant(uv0(:,3),uv0(:,4),uv0(:,3));
-                  Xscat.Points=uv0(:,1:2);
-                  Yscat=Xscat; Yscat.Values=uv0(:,4);
-                  Zscat=Xscat; Zscat.Values=uv0(:,5);
-              else
-                  %fallback for older versions of matlab.
-                  Xscat=TriScatteredInterp(uv0(:,3),uv0(:,4),uv0(:,3));  %#ok<REMFF1>
-                  Xscat.X=uv0(:,1:2);
-                  Yscat=Xscat; Yscat.V=uv0(:,4);
-                  Zscat=Xscat; Zscat.V=uv0(:,5);
-              end
-              xy0=[Xscat(uv(:,1),uv(:,2)) Yscat(uv(:,1),uv(:,2)) Zscat(uv(:,1),uv(:,2))];
-              xyz=xy0;
-
-              if anynans
-                  xyz(find(~nanix),:)=xyz; %find necessary because it ensures that xyz can grow.
-                  xyz(find(nanix),:)=nan;
-              end
-              return
+          rays = [repmat(cam.xyz, npts, 1) v];
+          xyz = nan(size(rays, 1), 3);
+          for i = 1:size(rays, 1)
+            xyz(i, :) = intersectRayDEM(rays(i, :), S);
           end
 
-          if Y(2,2)<Y(1,1)
-              X=flipud(X);Y=flipud(Y);Z=flipud(Z);
-          end
-          if X(2,2)<X(1,1)
-              X=fliplr(X);Y=fliplr(Y);Z=fliplr(Z);
-          end
-
-          if exist('griddedInterpolant','file')>1
-              zfun=griddedInterpolant(X',Y',Z'); %TODO: improve robustness.
-          else
-              %fallback for older versions of matlab. slower
-              zfun=@(x,y)interp2(X,Y,Z,x,y);
-          end
-          for ii=1:length(uv)
-              %misfit=@(xy)sum((cam.project([xy zfun(xy(1),xy(2))])-uv(ii,1:2)).^2);
-              misfitlm=@(xy)(cam.project([xy(:)' zfun(xy(1),xy(2))])-uv(ii,1:2))'.^2;
-              try
-                  %[xyz(ii,1:2),err]=fminunc(misfit,xy0(ii,1:2),optimset('LargeScale','off','Display','off','TolFun',0.001)); %TODO: remove dependency. can i use LMFnlsq?
-                  xyz(ii,1:2)=LMFnlsq(misfitlm,xy0(ii,1:2));
-                  xyz(ii,3)=zfun(xyz(ii,1),xyz(ii,2));
-                  if sum(misfitlm(xyz(ii,1:2)))>2^2
-                      xyz(ii,:)=nan; %do not accept greater than 2 pixel error.
-                  end
-              catch
-              end
-          end
+        %   % DEM: Return intersection of rays with DEM
+        %   [X, Y, Z] = deal(S.X, S.Y, S.Z);
+        %   visible = voxelviewshed(X, Y, Z, cam.xyz);
+        %   Z = Z ./ visible;
+        %   xyz = nan(npts, 3);
+        %   if nargin < 4
+        %       [uv0, ~ , inframe] = cam.project([X(visible(:)), Y(visible(:)), Z(visible(:))]);
+        %       uv0(:,3) = X(visible(:));
+        %       uv0(:,4) = Y(visible(:));
+        %       uv0(:,5) = Z(visible(:));
+        %       uv0 = uv0(inframe, :);
+        %       if exist('scatteredInterpolant','file') > 1
+        %           Xscat = scatteredInterpolant(uv0(:,3), uv0(:,4), uv0(:,3));
+        %           Xscat.Points = uv0(:,1:2);
+        %           Yscat = Xscat; Yscat.Values = uv0(:,4);
+        %           Zscat = Xscat; Zscat.Values = uv0(:,5);
+        %       else
+        %           %fallback for older versions of matlab.
+        %           Xscat = TriScatteredInterp(uv0(:,3), uv0(:,4), uv0(:,3));  %#ok<REMFF1>
+        %           Xscat.X = uv0(:,1:2);
+        %           Yscat = Xscat; Yscat.V = uv0(:,4);
+        %           Zscat = Xscat; Zscat.V = uv0(:,5);
+        %       end
+        %       xy0 = [Xscat(uv(:,1), uv(:,2)) Yscat(uv(:,1), uv(:,2)) Zscat(uv(:,1), uv(:,2))];
+        %       xyz = xy0;
+        %
+        %       if anynans
+        %           xyz(find(~nanix), :) = xyz; %find necessary because it ensures that xyz can grow.
+        %           xyz(find(nanix), :) = nan;
+        %       end
+        %       return
+        %   end
+        %
+        %   if Y(2, 2) < Y(1, 1)
+        %       X = flipud(X); Y = flipud(Y); Z = flipud(Z);
+        %   end
+        %   if X(2, 2) < X(1, 1)
+        %       X = fliplr(X); Y = fliplr(Y); Z = fliplr(Z);
+        %   end
+        %
+        %   if exist('griddedInterpolant', 'file') > 1
+        %       zfun = griddedInterpolant(X', Y', Z'); %TODO: improve robustness.
+        %   else
+        %       %fallback for older versions of matlab. slower
+        %       zfun = @(x, y) interp2(X, Y, Z, x, y);
+        %   end
+        %   for ii = 1:length(uv)
+        %       %misfit=@(xy)sum((cam.project([xy zfun(xy(1),xy(2))])-uv(ii,1:2)).^2);
+        %       misfitlm = @(xy) (cam.project([xy(:)' zfun(xy(1), xy(2))]) - uv(ii, 1:2))'.^2;
+        %       try
+        %           %[xyz(ii,1:2),err]=fminunc(misfit,xy0(ii,1:2),optimset('LargeScale','off','Display','off','TolFun',0.001)); %TODO: remove dependency. can i use LMFnlsq?
+        %           xyz(ii, 1:2) = LMFnlsq(misfitlm, xy0(ii, 1:2));
+        %           xyz(ii, 3) = zfun(xyz(ii, 1), xyz(ii, 2));
+        %           if sum(misfitlm(xyz(ii, 1:2))) > 2^2
+        %               xyz(ii, :) = nan; %do not accept greater than 2 pixel error.
+        %           end
+        %       catch
+        %       end
+        %   end
         end
 
         if anynans
@@ -432,72 +509,180 @@ classdef camera
         end
     end
 
+    function [newcam, rmse, aic] = optimizecam(cam, xyz, uv, freeparams)
+        % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
+        %
+        %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
+        %
+        % Uses an optimization routine to minize the root-mean-square reprojection
+        % error of image-world point correspondences (xyz, uv) by adjusting the
+        % specified camera parameters.
+        %
+        % If uv has three columns, the third column is interpreted as a weight
+        % in the misfit function.
+        %
+        % Inputs:
+        %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
+        %   uv         - Image coordinates [u1 v1; u2 v2; ...]
+        %                (optional 3rd column may specify weights)
+        %   freeparams - 20-element vector describing which camera parameters
+        %                should be optimized. Follows same order as cam.fullmodel.
+        %
+        % Outputs:
+        %   newcam - The optimized camera
+        %   rmse   - Root-mean-square reprojection error
+        %   aic    - Akaike information criterion for reprojection errors, which
+        %            can help determine an appropriate degree of complexity for
+        %            the camera model (i.e. avoid overfitting).
+        %            NOTE: Only strictly applicable for unweighted fitting.
+        %
+        % Example:
+        %   % Optimize the 3 viewdir parameters (elements 6-8 in fullmodel).
+        %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, '00000111000000000000')
 
-    function [result, rmse, AIC] = optimizecam(cam, xyz, uv, freeparams)
-        % OPTIMIZECAM  Tune the camera so that projecting xyz results in uv (least squares)
-        %
-        % [newcamera,rmse,AIC]=cam.optimizecam(xyz,uv,freeparams)
-        %
-        %
-        % If uv has three columns then the third column is interpreted as a
-        % weight in the misfit function.
-        %
-        %
-        % INPUTS:
-        %    xyz: world coordinates.
-        %    uv: target pixel coordinates.
-        %        [optional 3rd column may specify weights]
-        %    freeparams: a 20-element vector describing which camera
-        %         parameters should be optimized. Follows same order as
-        %         cam.fullmodel.
-        %
-        % OUTPUTS:
-        %   newcamera: the optimized camera.
-        %   rmse: root-mean-square-error
-        %   aic: Akaike information criterion which can be used to
-        %       help in determining an appropriate degree of complexity
-        %       for the camera model (i.e. avoiding overfitting). [only
-        %       strictly applicable for unweighted fitting]
-        %
-        % EXAMPLE:
-        % %optimize the three view direction parameters.
-        % %viewdir are the 6-8 columns in the <a href="matlab:help camera.fullmodel">camera.fullmodel</a>.
-        %   [newcamera,rmse,AIC] = cam.optimizecam(xyz,uv,'00000111000000000000')
-        %
-        %
+        % Drop any points with NaN coordinates
+        nanrows = any(isnan(xyz), 2) | any(isnan(uv), 2);
+        xyz(nanrows, :) = [];
+        uv(nanrows, :) = [];
 
-        nanrows=any(isnan(xyz),2)|any(isnan(uv),2);
-        xyz(nanrows,:)=[];
-        uv(nanrows,:)=[];
+        fullmodel0 = cam.fullmodel; % Describes the initial camera being perturbed.
 
-        fullmodel0=cam.fullmodel; %this describes the initial camera that is being perturbed.
+        % Convert fullmodel to boolean
+        freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
+        paramix = find(freeparams);
+        Nfree = length(paramix);
+        mbest = zeros(1, Nfree);
 
-        freeparams=~(freeparams(:)==0|freeparams(:)=='0')'; %convert to bools
-        paramix=find(freeparams);
-        Nfree=length(paramix);
-        mbest=zeros(1,Nfree);
+        newcam = @(m) camera(fullmodel0 + sparse(ones(1, Nfree), paramix, m, 1, length(fullmodel0)));
 
-        newcam=@(m)camera( fullmodel0 + sparse(ones(1,Nfree),paramix,m,1,length(fullmodel0)) );
-
-        if size(uv,2)==3
-            misfit=@(m)reshape((project(newcam(m),xyz)-uv(:,1:2)).*uv(:,[3 3]),[],1);%weighted least squares
+        if size(uv, 2) == 3
+            % Weighted least squares
+            misfit = @(m) reshape((project(newcam(m), xyz) - uv(:, 1:2)) .* uv(:, [3 3]), [], 1);
         else
-            misfit=@(m)reshape(project(newcam(m),xyz)-uv,[],1);
+            % Unweighted least squares
+            misfit = @(m) reshape(project(newcam(m), xyz) - uv, [], 1);
         end
         if isnan(misfit(mbest))
-            error('All GCPs must be infront of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement.
+            error('All GCPs must be in front of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement.
         end
+        [mbest, RSS] = LMFnlsq(misfit, mbest); %WORKS SUPER FAST
 
-        [mbest,RSS]=LMFnlsq(misfit,mbest); %WORKS SUPER FAST
+        Nuv = size(uv, 1);
+        newcam = newcam(mbest);
+        rmse = sqrt(RSS / Nuv);
+        aic = numel(uv) * log(RSS / numel(uv)) + 2 * Nfree;
+    end
 
+    %% Sky: Horizon detection (works great!)
+    % TODO: Move to DEM?
+    function X = horizon(cam, dem, ddeg)
+      if nargin < 3
+        ddeg = 0.1;
+      end
+      viewedges = cam.viewpyramid();
+      dxy = bsxfun(@minus, viewedges(1:(end - 1), 1:2), viewedges(end, 1:2));
+      angles = atan2d(dxy(:, 2), dxy(:, 1));
+      ray_angles = [min(angles):ddeg:max(angles)]';
+      dx = cosd(ray_angles); dy = sind(ray_angles);
+      rays = [repmat(cam.xyz, length(ray_angles), 1) dx dy repmat(0, length(ray_angles), 1)];
+      X = [];
+      for i = 1:length(ray_angles)
+        ray = rays(i, :);
+        cells = traverseRayDEM(ray, dem);
+        % Convert to upper-left matrix indices (flip y)
+        cells(:, 2) = dem.ny - (cells(:, 2) - 1);
+        xi = cells(:, 1); yi = cells(:, 2);
+        % Retrieve true x,y,z based on cell xy
+        ind = sub2ind(size(dem.Z), yi, xi);
+        x = dem.x(xi);
+        y = dem.y(yi);
+        z = dem.Z(ind);
+        elevation = atand((z - cam.xyz(3))' ./ sqrt((x - cam.xyz(1)).^2 + (y - cam.xyz(2)).^2));
+        [~, i_max] = max(elevation);
+        X(i, :) = [x(i_max) y(i_max) z(i_max)];
+      end
+      % [huv, ~, inframe] = cam.project(X);
+      % huv = huv(inframe, :);
+      % TODO: Clip to image frame edges
+      % c = clipEdge([huv(1:end-1, :) huv(2:end, :)], [0 cam.imgsz(2) 0 cam.imgsz(1)] + 0.5);
+    end
 
-        Nuv=size(uv,1);
-        rmse=sqrt(RSS/Nuv);
-        AIC=numel(uv)*log(RSS/numel(uv)) + 2*Nfree;
-        result=newcam(mbest);
+    function in = inframe(cam, uv)
+      box = cam.framebox;
+      in = uv(:, 1) >= box(1) & uv(:, 1) <= box(2) & uv(:, 2) >= box(3) & uv(:, 2) <= box(4);
+    end
+
+    % function uv = idealize(cam, uv)
+    %   % Convert to normalized camera coordinates
+    %   % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
+    %   xy = cam.normalize(uv);
+    %   % Project back undistorted
+    %   uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
+    % end
+
+    function xy = normalize(cam, pts)
+      if size(pts, 2) == 2
+        % Convert image to camera coordinates
+        % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
+        xy = [(pts(:, 1) - cam.c(1)) / cam.f(1), (pts(:, 2) - cam.c(2)) / cam.f(2)];
+        % Remove distortion
+        xy = cam.undistort(xy);
+      elseif size(pts, 2) == 3
+        % Convert world to camera coordinates
+        xyz = bsxfun(@minus, pts, cam.xyz);
+        xyz = xyz * cam.R';
+        % Normalize by perspective division
+        xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
+        % Convert points behind camera to NaN
+        infront = xyz(:, 3) > 0;
+        xy(infront, :) = NaN;
+      end
+    end
+
+    function uv = normalized2image(cam, xy, distort = true)
+      if distort
+        xy = cam.distort(xy);
+      end
+      uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
+    end
+
+    function dxyz = normalized2world(cam, xy)
+      dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
+    end
+
+    function h = plotDistortion(cam, scale)
+      if nargin < 2
+        scale = 1;
+      end
+      du = 100; nu = round(cam.imgsz(2) / du); du = cam.imgsz(2) / nu;
+      u = (0:du:cam.imgsz(2)) + 0.5;
+      v = (0:du:cam.imgsz(1)) + 0.5;
+      [pu pv] = meshgrid(u, v);
+      P0 = [pu(:) pv(:)]; P1 = cam.idealize(P0);
+      h = plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
+      quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
+      set(gca, 'xlim', cam.imgsz(2) * [-0.1 1.1], 'ylim', cam.imgsz(1) * [-0.1 1.1], 'ydir', 'reverse');
+      axis equal; hold off;
     end
 
   end % methods
+
+  methods (Static)
+
+    function R = optimizeR(xyA, xyB)
+      ang = [0 0 0];
+      misfit = @(ang) camera.Re(ang, xyA, xyB);
+      [ang, RSS] = LMFnlsq(misfit, ang); %WORKS SUPER FAST
+      R = ang2rot(ang);
+    end
+
+    function e = Re(ang, xyA, xyB)
+      R = ang2rot(ang);
+      pxyB = hnormalise(R * homog(xyA'))';
+      e = sum((pxyB(:, 1:2) - xyB).^2, 2);
+    end
+
+  end
 
   methods (Access = private)
 
