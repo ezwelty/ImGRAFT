@@ -66,7 +66,6 @@ classdef camera
   % TODO: Remove imgsz from fullmodel (since not needed in optimization)
   % TODO: Clean up optimizecam. Add support for named arguments.
   % TODO: Extend optimizecam to work with camera bundle.
-  % FIXME: Don't resize camera in place
 
   properties
     xyz
@@ -152,7 +151,7 @@ classdef camera
       % Validate parameters
       % TODO: Move to camera.set functions?
       % xyz: 3-element vector, default = 0
-      cam.xyz(end + 1:3) = 0;
+      %cam.xyz(end + 1:3) = 0;
       % imgsz: 2-element vector, no default, expand [#] to [#, #]
       if length(cam.imgsz) == 1, cam.imgsz(end + 1) = cam.imgsz(end); end
       % viewdir: 3-element vector, default = 0
@@ -315,20 +314,23 @@ classdef camera
       % Inputs:
       %   scale - Scale factor [s] or desired image size [ny|nrows, nx|ncols]
 
-      imgsz0 = cam.imgsz;
-      c0 = cam.c;
       if length(scale) > 1
-        cam.imgsz = round(scale(1:2));
-        scale = cam.imgsz ./ imgsz0;
-        if any(abs(diff(scale)) * imgsz0 > 1)
-          error(['Aspect ratio of target image size (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') too different from original (' num2str(imgsz0(1) / imgsz0(2), 2) ') to be accounted for by rounding.']);
+        imgsz1 = round(scale(1:2));
+        scale = imgsz1 ./ cam.imgsz;
+        if any(abs(diff(scale)) * cam.imgsz > 1)
+          error(['Aspect ratio of target image size (' num2str(imgsz1(1) / imgsz1(2), 2) ') too different from original (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') to be accounted for by rounding.']);
         end
       else
-        cam.imgsz = round(scale * cam.imgsz);
-        scale = cam.imgsz ./ imgsz0;
+        imgsz1 = round(scale * cam.imgsz);
+        scale = imgsz1 ./ cam.imgsz;
       end
-      cam.f = cam.f .* flip(scale);
-      cam.c = ((cam.imgsz([2 1]) + 1) / 2) + (c0 - ((imgsz0([2 1]) + 1) / 2)) .* flip(scale);
+      f = cam.f .* flip(scale);
+      c = ((imgsz1([2 1]) + 1) / 2) + (cam.c - ((cam.imgsz([2 1]) + 1) / 2)) .* flip(scale);
+      % Save to new object
+      cam = cam;
+      cam.f = f;
+      cam.c = c;
+      cam.imgsz = imgsz1;
     end
 
     function [uv, depth, inframe] = project(cam, xyz)
@@ -639,7 +641,10 @@ classdef camera
       end
     end
 
-    function uv = normalized2image(cam, xy, distort = true)
+    function uv = normalized2image(cam, xy, distort)
+      if nargin < 3
+        distort = true;
+      end
       if distort
         xy = cam.distort(xy);
       end
