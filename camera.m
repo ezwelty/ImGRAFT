@@ -1,4 +1,3 @@
-% TODO: Use degrees for yaw, pitch, and roll angles.
 % TODO: Split out DEM intersection function into DEM class method.
 % TODO: Limit voxelviewshed to camera view (not just position)
 % TODO: Remove imgsz from fullmodel (since not needed in optimization)
@@ -194,7 +193,23 @@ classdef camera
     end
 
     function cam = set.R(cam, value)
-      cam.viewdir = rot2oblang(value);
+      % cos(elevation) != 0
+      if abs(value(3, 3)) ~= 1
+        w = asin(value(3, 3));
+        p = atan2(value(3, 1) / cos(w), value(3, 2) / cos(w));
+        k = atan2(-value(1, 3) / cos(w), -value(2, 3) / cos(w));
+      % cos(elevation) == 0
+      else
+        k = 0; % (unconstrained)
+        if value(3, 3) == 1
+            w = pi / 2;
+            p = -k + atan2(-value(1, 2), value(1, 1));
+        else
+            w = -pi / 2;
+            p = k + atan2(-value(1, 2), value(1, 1));
+        end
+      end
+      cam.viewdir = rad2deg([p w k]);
     end
 
     function value = get.fullmodel(cam)
