@@ -1,4 +1,3 @@
-% TODO: Reverse directions of yaw and pitch angles.
 % TODO: Use degrees for yaw, pitch, and roll angles.
 % TODO: Split out DEM intersection function into DEM class method.
 % TODO: Limit voxelviewshed to camera view (not just position)
@@ -25,7 +24,7 @@ classdef camera
   % k        - Radial distortion coefficients [k1, ..., k6]
   % p        - Tangential distortion coefficients [p1, p2]
   % xyz      - Camera position in world coordinates [x, y, z]
-  % viewdir  - Camera view direction in radians [yaw, pitch, roll]
+  % viewdir  - Camera view direction in degrees [yaw, pitch, roll]
   %            yaw: clockwise rotation about z-axis (0 = look north)
   %            pitch: rotation from horizon (+ look up, - look down)
   %            roll: rotation about optical axis (+ down right, - down left, from behind)
@@ -178,7 +177,7 @@ classdef camera
       % (camera +z now pointing north, with +x east and +y down)
 
       % View direction rotations
-      C = cos(cam.viewdir); S = sin(cam.viewdir);
+      C = cosd(cam.viewdir); S = sind(cam.viewdir);
       % syms C1 C2 C3 S1 S2 S3
       % yaw: counterclockwise rotation about y-axis (relative to north, from above: +cw, - ccw)
       %   ry = [C1 0 -S1; 0 1 0; S1 0 C1];
@@ -195,8 +194,7 @@ classdef camera
     end
 
     function cam = set.R(cam, value)
-      oblang = rot2oblang(value);
-      cam.viewdir = oblang * pi / 180;
+      cam.viewdir = rot2oblang(value);
     end
 
     function value = get.fullmodel(cam)
