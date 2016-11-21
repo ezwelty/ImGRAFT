@@ -1,6 +1,5 @@
 % TODO: Reverse directions of yaw and pitch angles.
 % TODO: Use degrees for yaw, pitch, and roll angles.
-% TODO: Reverse imgsz [ny, nx] to [nx, ny].
 % TODO: Split out DEM intersection function into DEM class method.
 % TODO: Limit voxelviewshed to camera view (not just position)
 % TODO: Remove imgsz from fullmodel (since not needed in optimization)
@@ -27,8 +26,8 @@ classdef camera
   % p        - Tangential distortion coefficients [p1, p2]
   % xyz      - Camera position in world coordinates [x, y, z]
   % viewdir  - Camera view direction in radians [yaw, pitch, roll]
-  %            yaw: counterclockwise rotation about z-axis (0 = look east)
-  %            pitch: rotation from horizon (+ look down, - look up)
+  %            yaw: clockwise rotation about z-axis (0 = look north)
+  %            pitch: rotation from horizon (+ look up, - look down)
   %            roll: rotation about optical axis (+ down right, - down left, from behind)
   % sensorsz - Size of camera sensor in mm [width, height] (optional)
   %
@@ -175,30 +174,29 @@ classdef camera
       % Initial rotations of camera reference frame
       % (camera +z pointing up, with +x east and +y north)
       % Point camera north: -90 deg counterclockwise rotation about x-axis
-      %   ri_1 = [1 0 0; 0 cosd(-90) sind(-90); 0 -sind(-90) cosd(-90)];
-      % Point camera east: 90 deg counterclockwise rotation about y-axis
-      %   ri_2 = [cosd(90) 0 -sind(90); 0 1 0; sind(90) 0 cosd(90)];
-      % (camera +z now pointing east, with +x south and +y down)
+      %   ri = [1 0 0; 0 cosd(-90) sind(-90); 0 -sind(-90) cosd(-90)];
+      % (camera +z now pointing north, with +x east and +y down)
 
       % View direction rotations
       C = cos(cam.viewdir); S = sin(cam.viewdir);
-      % yaw: clockwise rotation about y-axis (relative to east, from above: + ccw, - cw)
-      %   ry = [C(1) 0 S(1); 0 1 0; -S(1) 0 C(1)];
-      % pitch: clockwise rotation about x-axis (relative to horizon: - up, + down)
-      %   rp = [1 0 0; 0 C(2) -S(2); 0 S(2) C(2)];
+      % syms C1 C2 C3 S1 S2 S3
+      % yaw: counterclockwise rotation about y-axis (relative to north, from above: +cw, - ccw)
+      %   ry = [C1 0 -S1; 0 1 0; S1 0 C1];
+      % pitch: counterclockwise rotation about x-axis (relative to horizon: + up, - down)
+      %   rp = [1 0 0; 0 C2 S2; 0 -S2 C2];
       % roll: counterclockwise rotation about z-axis (from behind camera: + ccw, - cw)
-      %   rr = [C(3) S(3) 0; -S(3) C(3) 0; 0 0 1];
+      %   rr = [C3 S3 0; -S3 C3 0; 0 0 1];
 
       % Apply all rotations in order
-      %   R = rr * rp * ry * ri_2 * ri_1;
-      value = [ C(3) * S(1) - C(1) * S(2) * S(3), -C(1) * C(3) - S(1) * S(2) * S(3), -C(2) * S(3); ...
-               -S(1) * S(3) - C(1) * C(3) * S(2),  C(1) * S(3) - C(3) * S(1) * S(2), -C(2) * C(3); ...
-                C(1) * C(2)                     ,  C(2) * S(1)                     , -S(2)       ];
+      %   R = rr * rp * ry * ri;
+      value = [ C(1) * C(3) + S(1) * S(2) * S(3),  C(1) * S(2) * S(3) - C(3) * S(1), -C(2) * S(3); ...
+                C(3) * S(1) * S(2) - C(1) * S(3),  S(1) * S(3) + C(1) * C(3) * S(2), -C(2) * C(3); ...
+                C(2) * S(1)                     ,  C(1) * C(2)                     ,  S(2)       ];
     end
 
     function cam = set.R(cam, value)
       oblang = rot2oblang(value);
-      cam.viewdir = [-(oblang(1) - 90) -oblang(2) oblang(3)] * pi / 180;
+      cam.viewdir = oblang * pi / 180;
     end
 
     function value = get.fullmodel(cam)
