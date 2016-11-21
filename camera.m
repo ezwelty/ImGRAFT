@@ -1,3 +1,12 @@
+% TODO: Reverse directions of yaw and pitch angles.
+% TODO: Use degrees for yaw, pitch, and roll angles.
+% TODO: Reverse imgsz [ny, nx] to [nx, ny].
+% TODO: Split out DEM intersection function into DEM class method.
+% TODO: Limit voxelviewshed to camera view (not just position)
+% TODO: Remove imgsz from fullmodel (since not needed in optimization)
+% TODO: Clean up optimizecam. Add support for named arguments.
+% TODO: Extend optimizecam to work with camera bundle.
+
 classdef camera
   % camera Distorted camera model
   %
@@ -11,7 +20,7 @@ classdef camera
   % at [(nx + 1) / 2, (ny + 1) / 2].
   %
   % camera Properties:
-  % imgsz    - Size of image in pixels [ny|nrows|height, nx|ncols|width]
+  % imgsz    - Size of image in pixels [nx|ncols|width, ny|nrows|height]
   % f        - Focal length in pixels [fx, fy]
   % c        - Camera center coordinates in pixels [cx, cy]
   % k        - Radial distortion coefficients [k1, ..., k6]
@@ -57,15 +66,6 @@ classdef camera
   % LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   % OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
   % THE SOFTWARE.
-
-  % TODO: Reverse directions of yaw and pitch angles.
-  % TODO: Use degrees for yaw, pitch, and roll angles.
-  % TODO: Reverse imgsz [ny, nx] to [nx, ny].
-  % TODO: Split out DEM intersection function into DEM class method.
-  % TODO: Limit voxelviewshed to camera view (not just position)
-  % TODO: Remove imgsz from fullmodel (since not needed in optimization)
-  % TODO: Clean up optimizecam. Add support for named arguments.
-  % TODO: Extend optimizecam to work with camera bundle.
 
   properties
     xyz
@@ -127,9 +127,9 @@ classdef camera
       p.CaseSensitive = false;
       p.StructExpand = true;
       p.addOptional('xyz', [0 0 0], @(x) isnumeric(x) && length(x) <= 3);
-      p.addOptional('imgsz', [100 100], @(x) isnumeric(x) && length(x) <= 2);
+      p.addOptional('imgsz', [], @(x) isnumeric(x) && length(x) <= 2);
       p.addOptional('viewdir', [0 0 0], @(x) isnumeric(x) && length(x) <= 3);
-      p.addOptional('f', [100 100], @(x) isnumeric(x) && length(x) <= 2);
+      p.addOptional('f', [], @(x) isnumeric(x) && length(x) <= 2);
       p.addOptional('c', [], @(x) isnumeric(x) && length(x) == 2);
       p.addOptional('k', [0 0 0 0 0 0], @(x) isnumeric(x) && length(x) <= 6);
       p.addOptional('p', [0 0], @(x) isnumeric(x) && length(x) <= 2);
@@ -160,8 +160,8 @@ classdef camera
       if length(cam.f) == 1, cam.f(end + 1) = cam.f(end); end
       % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
       if isempty(cam.c) && ~isempty(cam.imgsz)
-        cam.c = (flip(cam.imgsz) + 1) / 2;
-        cam.c(flip(cam.imgsz) == 0) = 0;
+        cam.c = (cam.imgsz + 1) / 2;
+        cam.c(cam.imgsz == 0) = 0;
       end
       % k: 6-element vector, default = 0
       cam.k(end + 1:6) = 0;
@@ -225,7 +225,7 @@ classdef camera
       if (isempty(cam.sensorsz))
         error('Camera sensor size not set.');
       else
-        cam.f = value .* cam.imgsz([2 1]) ./ cam.sensorsz;
+        cam.f = value .* cam.imgsz ./ cam.sensorsz;
       end
     end
 
@@ -233,21 +233,21 @@ classdef camera
       if (isempty(cam.sensorsz))
         error('Camera sensor size not set.');
       else
-        value = cam.f .* cam.sensorsz ./ cam.imgsz([2 1]);
+        value = cam.f .* cam.sensorsz ./ cam.imgsz;
       end
     end
 
     function value = get.framebox(cam)
-      value = [0 cam.imgsz(2) 0 cam.imgsz(1)] + 0.5;
+      value = [0 cam.imgsz(1) 0 cam.imgsz(2)] + 0.5;
     end
 
     function value = get.framepoly(cam)
-      value = flipud([0 0 ; cam.imgsz(2) 0 ; cam.imgsz(2) cam.imgsz(1) ; 0 cam.imgsz(1) ; 0 0] + 0.5); % flip so cw in typical xy-space
+      value = flipud([0 0 ; cam.imgsz(1) 0 ; cam.imgsz(1) cam.imgsz(2) ; 0 cam.imgsz(2) ; 0 0] + 0.5); % flip so cw in typical xy-space
     end
 
     function plot(cam, radius, color)
       plot3(cam.xyz(1), cam.xyz(2), cam.xyz(3), 'r.'); hold on;
-      corner_uv = [0 0; cam.imgsz(2) 0; cam.imgsz([2 1]); 0 cam.imgsz(1)] + 0.5;
+      corner_uv = [0 0; cam.imgsz(1) 0; cam.imgsz; 0 cam.imgsz(2)] + 0.5;
       corner_xyz = cam.invproject(corner_uv);
       directions = bsxfun(@minus, corner_xyz, cam.xyz);
       if nargin < 2
@@ -264,11 +264,11 @@ classdef camera
     end
 
     function value = viewpyramid(cam, radius)
-      u = [0:cam.imgsz(2)]'; v = [0:cam.imgsz(1)]';
+      u = [0:cam.imgsz(1)]'; v = [0:cam.imgsz(2)]';
       edge_uv = [
         [u repmat(0, length(u), 1)];
-        [repmat(cam.imgsz(2), length(v), 1) v];
-        [flip(u) repmat(cam.imgsz(1), length(u), 1)];
+        [repmat(cam.imgsz(1), length(v), 1) v];
+        [flip(u) repmat(cam.imgsz(2), length(u), 1)];
         [repmat(0, length(v), 1) flip(v)]
       ];
       edge_xyz = cam.invproject(edge_uv);
@@ -279,15 +279,6 @@ classdef camera
       scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
       edge_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
       value = [edge_xyz; cam.xyz];
-      % corner_uv = [0 0; cam.imgsz(2) 0; cam.imgsz([2 1]); 0 cam.imgsz(1)] + 0.5;
-      % corner_xyz = cam.invproject(corner_uv);
-      % directions = bsxfun(@minus, corner_xyz, cam.xyz);
-      % if nargin < 2
-      %   radius = 1;
-      % end
-      % scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
-      % corner_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
-      % value = [corner_xyz; cam.xyz];
     end
 
     function value = viewbox(cam, radius)
@@ -325,7 +316,7 @@ classdef camera
         scale = imgsz1 ./ cam.imgsz;
       end
       f = cam.f .* flip(scale);
-      c = ((imgsz1([2 1]) + 1) / 2) + (cam.c - ((cam.imgsz([2 1]) + 1) / 2)) .* flip(scale);
+      c = ((imgsz1 + 1) / 2) + (cam.c - ((cam.imgsz + 1) / 2)) .* flip(scale);
       % Save to new object
       cam = cam;
       cam.f = f;
@@ -370,7 +361,7 @@ classdef camera
       end
       if nargout > 2
         % TODO: additional constraint for negative k1 and r2 > 1. (See orthorectification example) NOTE: Why? A point is either in or out of the image frame.
-        inframe = (depth > 0) & (uv(:, 1) >= 0.5) & (uv(:, 1) <= cam.imgsz(2) + 0.5) & (uv(:, 2) >= 0.5) & (uv(:, 2) <= cam.imgsz(1) + 0.5);
+        inframe = (depth > 0) & (uv(:, 1) >= 0.5) & (uv(:, 1) <= cam.imgsz(1) + 0.5) & (uv(:, 2) >= 0.5) & (uv(:, 2) <= cam.imgsz(2) + 0.5);
       end
     end
 
@@ -575,39 +566,17 @@ classdef camera
         aic = numel(uv) * log(RSS / numel(uv)) + 2 * Nfree;
     end
 
-    %% Sky: Horizon detection (works great!)
-    % TODO: Move to DEM?
-    function X = horizon(cam, dem, ddeg)
-      if nargin < 3
-        ddeg = 0.1;
-      end
-      viewedges = cam.viewpyramid();
-      dxy = bsxfun(@minus, viewedges(1:(end - 1), 1:2), viewedges(end, 1:2));
-      angles = atan2d(dxy(:, 2), dxy(:, 1));
-      ray_angles = [min(angles):ddeg:max(angles)]';
-      dx = cosd(ray_angles); dy = sind(ray_angles);
-      rays = [repmat(cam.xyz, length(ray_angles), 1) dx dy repmat(0, length(ray_angles), 1)];
-      X = [];
-      for i = 1:length(ray_angles)
-        ray = rays(i, :);
-        cells = traverseRayDEM(ray, dem);
-        % Convert to upper-left matrix indices (flip y)
-        cells(:, 2) = dem.ny - (cells(:, 2) - 1);
-        xi = cells(:, 1); yi = cells(:, 2);
-        % Retrieve true x,y,z based on cell xy
-        ind = sub2ind(size(dem.Z), yi, xi);
-        x = dem.x(xi);
-        y = dem.y(yi);
-        z = dem.Z(ind);
-        elevation = atand((z - cam.xyz(3))' ./ sqrt((x - cam.xyz(1)).^2 + (y - cam.xyz(2)).^2));
-        [~, i_max] = max(elevation);
-        X(i, :) = [x(i_max) y(i_max) z(i_max)];
-      end
-      % [huv, ~, inframe] = cam.project(X);
-      % huv = huv(inframe, :);
-      % TODO: Clip to image frame edges
-      % c = clipEdge([huv(1:end-1, :) huv(2:end, :)], [0 cam.imgsz(2) 0 cam.imgsz(1)] + 0.5);
-    end
+    % Sky: Horizon detection (works great!)
+    % function X = horizon(cam, dem, ddeg)
+    %   if nargin < 3
+    %     ddeg = 1;
+    %   end
+    %   viewedges = cam.viewpyramid();
+    %   dxy = bsxfun(@minus, viewedges(1:(end - 1), 1:2), viewedges(end, 1:2));
+    %   angles = atan2d(dxy(:, 2), dxy(:, 1));
+    %   ray_angles = [min(angles):ddeg:max(angles)]';
+    %   X = dem.horizon(cam.xyz, ray_angles);
+    % end
 
     function in = inframe(cam, uv)
       box = cam.framebox;
@@ -659,14 +628,14 @@ classdef camera
       if nargin < 2
         scale = 1;
       end
-      du = 100; nu = round(cam.imgsz(2) / du); du = cam.imgsz(2) / nu;
-      u = (0:du:cam.imgsz(2)) + 0.5;
-      v = (0:du:cam.imgsz(1)) + 0.5;
+      du = 100; nu = round(cam.imgsz(1) / du); du = cam.imgsz(2) / nu;
+      u = (0:du:cam.imgsz(1)) + 0.5;
+      v = (0:du:cam.imgsz(2)) + 0.5;
       [pu pv] = meshgrid(u, v);
       P0 = [pu(:) pv(:)]; P1 = cam.idealize(P0);
       h = plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
       quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
-      set(gca, 'xlim', cam.imgsz(2) * [-0.1 1.1], 'ylim', cam.imgsz(1) * [-0.1 1.1], 'ydir', 'reverse');
+      set(gca, 'xlim', cam.imgsz(1) * [-0.1 1.1], 'ylim', cam.imgsz(2) * [-0.1 1.1], 'ydir', 'reverse');
       axis equal; hold off;
     end
 
