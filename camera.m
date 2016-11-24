@@ -1,4 +1,3 @@
-% TODO: Split out DEM intersection function into DEM class method.
 % TODO: Limit voxelviewshed to camera view (not just position)
 % TODO: Remove imgsz from fullmodel (since not needed in optimization)
 % TODO: Clean up optimizecam. Add support for named arguments.
@@ -144,28 +143,59 @@ classdef camera
       for field = fieldnames(p.Results)'
         cam.(field{1}) = p.Results.(field{1});
       end
+    end
 
-      % Validate parameters
-      % TODO: Move to camera.set functions?
+    function cam = set.xyz(cam, value)
       % xyz: 3-element vector, default = 0
-      %cam.xyz(end + 1:3) = 0;
+      value(end + 1:3) = 0;
+      cam.xyz = value;
+    end
+
+    function cam = set.imgsz(cam, value)
       % imgsz: 2-element vector, no default, expand [#] to [#, #]
-      if length(cam.imgsz) == 1, cam.imgsz(end + 1) = cam.imgsz(end); end
-      % viewdir: 3-element vector, default = 0
-      cam.viewdir(end + 1:3) = 0;
-      % f: 2-element vector, no default, expand [f] to [f, f]
-      if length(cam.f) == 1, cam.f(end + 1) = cam.f(end); end
+      if length(value) == 1
+        value(end + 1) = value(end);
+      end
+      cam.imgsz = value;
       % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
       if isempty(cam.c) && ~isempty(cam.imgsz)
         cam.c = (cam.imgsz + 1) / 2;
         cam.c(cam.imgsz == 0) = 0;
       end
+    end
+
+    function cam = set.viewdir(cam, value)
+      % viewdir: 3-element vector, default = 0
+      value(end + 1:3) = 0;
+      cam.viewdir = value;
+    end
+
+    function cam = set.f(cam, value)
+      % f: 2-element vector, no default, expand [f] to [f, f]
+      if length(value) == 1
+        value(end + 1) = value(end);
+      end
+      cam.f = value;
+    end
+
+    function cam = set.k(cam, value)
       % k: 6-element vector, default = 0
-      cam.k(end + 1:6) = 0;
+      value(end + 1:6) = 0;
+      cam.k = value;
+    end
+
+    function cam = set.p(cam, value)
       % p: 2-element vector, default = 0
-      cam.p(end + 1:2) = 0;
+      value(end + 1:2) = 0;
+      cam.p = value;
+    end
+
+    function cam = set.sensorsz(cam, value)
       % sensorsz: 2-element vector, no default, expand [#] to [#, #]
-      if length(cam.sensorsz) == 1, cam.sensorsz(end + 1) = cam.sensorsz(end); end
+      if length(value) == 1
+        value(end + 1) = value(end);
+      end
+      cam.sensorsz = value;
     end
 
     function cam = set.fmm(cam, value)
@@ -288,22 +318,13 @@ classdef camera
       value = flipud([0 0 ; cam.imgsz(1) 0 ; cam.imgsz(1) cam.imgsz(2) ; 0 cam.imgsz(2) ; 0 0] + 0.5); % flip so cw in typical xy-space
     end
 
-    function plot(cam, radius, color)
-      plot3(cam.xyz(1), cam.xyz(2), cam.xyz(3), 'r.'); hold on;
-      corner_uv = [0 0; cam.imgsz(1) 0; cam.imgsz; 0 cam.imgsz(2)] + 0.5;
-      corner_xyz = cam.invproject(corner_uv);
-      directions = bsxfun(@minus, corner_xyz, cam.xyz);
+    function value = viewbox(cam, radius)
       if nargin < 2
-        radius = 1;
+        pyramid = cam.viewpyramid();
+      else
+        pyramid = cam.viewpyramid(radius);
       end
-      scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
-      corner_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
-      plot3(corner_xyz([1:4 1], 1), corner_xyz([1:4 1], 2), corner_xyz([1:4 1], 3), 'k-');
-      plot3([repmat(cam.xyz(1), 4, 1) corner_xyz(:, 1)]', [repmat(cam.xyz(2), 4, 1) corner_xyz(:, 2)]', [repmat(cam.xyz(3), 4, 1) corner_xyz(:, 3)]', 'k-');
-      if nargin < 3
-        color = rand(1, 3);
-      end
-      patch(corner_xyz(:, 1), corner_xyz(:, 2), corner_xyz(:, 3), color, 'FaceAlpha', 0.5);
+      value = [min(pyramid); max(pyramid)];
     end
 
     function value = viewpyramid(cam, radius)
@@ -324,13 +345,37 @@ classdef camera
       value = [edge_xyz; cam.xyz];
     end
 
-    function value = viewbox(cam, radius)
+    function plot(cam, radius, color)
+      plot3(cam.xyz(1), cam.xyz(2), cam.xyz(3), 'r.'); hold on;
+      corner_uv = [0 0; cam.imgsz(1) 0; cam.imgsz; 0 cam.imgsz(2)] + 0.5;
+      corner_xyz = cam.invproject(corner_uv);
+      directions = bsxfun(@minus, corner_xyz, cam.xyz);
       if nargin < 2
-        pyramid = cam.viewpyramid();
-      else
-        pyramid = cam.viewpyramid(radius);
+        radius = 1;
       end
-      value = [min(pyramid); max(pyramid)];
+      scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
+      corner_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
+      plot3(corner_xyz([1:4 1], 1), corner_xyz([1:4 1], 2), corner_xyz([1:4 1], 3), 'k-');
+      plot3([repmat(cam.xyz(1), 4, 1) corner_xyz(:, 1)]', [repmat(cam.xyz(2), 4, 1) corner_xyz(:, 2)]', [repmat(cam.xyz(3), 4, 1) corner_xyz(:, 3)]', 'k-');
+      if nargin < 3
+        color = rand(1, 3);
+      end
+      patch(corner_xyz(:, 1), corner_xyz(:, 2), corner_xyz(:, 3), color, 'FaceAlpha', 0.5);
+    end
+
+    function h = plotDistortion(cam, scale)
+      if nargin < 2
+        scale = 1;
+      end
+      du = 100; nu = round(cam.imgsz(1) / du); du = cam.imgsz(2) / nu;
+      u = (0:du:cam.imgsz(1)) + 0.5;
+      v = (0:du:cam.imgsz(2)) + 0.5;
+      [pu pv] = meshgrid(u, v);
+      P0 = [pu(:) pv(:)]; P1 = cam.idealize(P0);
+      h = plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
+      quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
+      set(gca, 'xlim', cam.imgsz(1) * [-0.1 1.1], 'ylim', cam.imgsz(2) * [-0.1 1.1], 'ydir', 'reverse');
+      axis equal; hold off;
     end
 
     % projection
@@ -507,21 +552,6 @@ classdef camera
     %   ray_angles = [min(angles):ddeg:max(angles)]';
     %   X = dem.horizon(cam.xyz, ray_angles);
     % end
-
-    function h = plotDistortion(cam, scale)
-      if nargin < 2
-        scale = 1;
-      end
-      du = 100; nu = round(cam.imgsz(1) / du); du = cam.imgsz(2) / nu;
-      u = (0:du:cam.imgsz(1)) + 0.5;
-      v = (0:du:cam.imgsz(2)) + 0.5;
-      [pu pv] = meshgrid(u, v);
-      P0 = [pu(:) pv(:)]; P1 = cam.idealize(P0);
-      h = plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
-      quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
-      set(gca, 'xlim', cam.imgsz(1) * [-0.1 1.1], 'ylim', cam.imgsz(2) * [-0.1 1.1], 'ydir', 'reverse');
-      axis equal; hold off;
-    end
 
   end % methods
 
