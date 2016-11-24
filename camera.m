@@ -1,8 +1,6 @@
-% TODO: Limit voxelviewshed to camera view (not just position)
-% TODO: Remove imgsz from fullmodel (since not needed in optimization)
 % TODO: Clean up optimizecam. Add support for named arguments.
 % TODO: Extend optimizecam to work with camera bundle.
-% TODO: Set principal point default when imgsz set.
+% TODO: Limit voxelviewshed to camera view (not just position)
 
 classdef camera
   % camera Distorted camera model
@@ -385,26 +383,37 @@ classdef camera
       in = uv(:, 1) >= box(1) & uv(:, 1) <= box(2) & uv(:, 2) >= box(3) & uv(:, 2) <= box(4);
     end
 
-    function xy = normalize(cam, pts)
-      if size(pts, 2) == 2
-        % Convert image to camera coordinates
-        % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
-        xy = [(pts(:, 1) - cam.c(1)) / cam.f(1), (pts(:, 2) - cam.c(2)) / cam.f(2)];
-        % Remove distortion
-        xy = cam.undistort(xy);
-      elseif size(pts, 2) == 3
-        % Convert world to camera coordinates
-        xyz = bsxfun(@minus, pts, cam.xyz);
-        xyz = xyz * cam.R';
-        % Normalize by perspective division
-        xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
-        % Convert points behind camera to NaN
-        infront = xyz(:, 3) > 0;
-        xy(infront, :) = NaN;
-      end
+    function in = infront(cam, xyz)
+      xyz = bsxfun(@minus, xyz, cam.xyz);
+      xyz = xyz * cam.R';
+      infront = xyz(:, 3) > 0;
     end
 
-    function uv = normalized2image(cam, xy, distort)
+    function xy = image2camera(cam, uv)
+      % Convert image to camera coordinates
+      % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
+      xy = [(uv(:, 1) - cam.c(1)) / cam.f(1), (uv(:, 2) - cam.c(2)) / cam.f(2)];
+      % Remove distortion
+      xy = cam.undistort(xy);
+    end
+
+    function dxyz = camera2world(cam, xy)
+      % Convert camera coordinates to world ray directions
+      dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
+    end
+
+    function [xy, infront] = world2camera(cam, xyz)
+      % Convert world to camera coordinates
+      xyz = bsxfun(@minus, xyz, cam.xyz);
+      xyz = xyz * cam.R';
+      % Normalize by perspective division
+      xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
+      % Convert points behind camera to NaN
+      infront = xyz(:, 3) > 0;
+      xy(infront, :) = NaN;
+    end
+
+    function uv = camera2image(cam, xy, distort)
       if nargin < 3
         distort = true;
       end
@@ -414,11 +423,7 @@ classdef camera
       uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
     end
 
-    function dxyz = normalized2world(cam, xy)
-      dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
-    end
-
-    function uv = project(cam, xyz)
+    function [uv, infront] = project(cam, xyz)
       % PROJECT  Project 3D world coordinates to 2D image coordinates.
       %
       %   uv = cam.project(xyz)
@@ -431,8 +436,8 @@ classdef camera
       %
       % See also: camera.invproject
 
-      xy = cam.normalize(xyz);
-      uv = normalized2image(xy);
+      [xy, infront] = cam.world2camera(xyz);
+      uv = cam.camera2image(xy);
     end
 
     function xyz = invproject(cam, uv, S)
@@ -456,9 +461,9 @@ classdef camera
       % See also: camera.project
 
       % Convert to normalized camera coordinates
-      xy = cam.normalize(uv);
+      xy = cam.image2camera(uv);
       % Convert to ray direction vectors
-      xyz = cam.normalized2world(xy);
+      xyz = cam.camera2world(xy);
       % Track valid coordinates
       is_valid = ~any(isnan(xyz), 2);
 
@@ -478,67 +483,67 @@ classdef camera
     end
 
     function [newcam, rmse, aic] = optimizecam(cam, xyz, uv, freeparams)
-        % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
-        %
-        %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
-        %
-        % Uses an optimization routine to minize the root-mean-square reprojection
-        % error of image-world point correspondences (xyz, uv) by adjusting the
-        % specified camera parameters.
-        %
-        % If uv has three columns, the third column is interpreted as a weight
-        % in the misfit function.
-        %
-        % Inputs:
-        %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
-        %   uv         - Image coordinates [u1 v1; u2 v2; ...]
-        %                (optional 3rd column may specify weights)
-        %   freeparams - 20-element vector describing which camera parameters
-        %                should be optimized. Follows same order as cam.fullmodel.
-        %
-        % Outputs:
-        %   newcam - The optimized camera
-        %   rmse   - Root-mean-square reprojection error
-        %   aic    - Akaike information criterion for reprojection errors, which
-        %            can help determine an appropriate degree of complexity for
-        %            the camera model (i.e. avoid overfitting).
-        %            NOTE: Only strictly applicable for unweighted fitting.
-        %
-        % Example:
-        %   % Optimize the 3 viewdir parameters (elements 6-8 in fullmodel).
-        %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, '00000111000000000000')
+      % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
+      %
+      %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
+      %
+      % Uses an optimization routine to minize the root-mean-square reprojection
+      % error of image-world point correspondences (xyz, uv) by adjusting the
+      % specified camera parameters.
+      %
+      % If uv has three columns, the third column is interpreted as a weight
+      % in the misfit function.
+      %
+      % Inputs:
+      %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
+      %   uv         - Image coordinates [u1 v1; u2 v2; ...]
+      %                (optional 3rd column may specify weights)
+      %   freeparams - 20-element vector describing which camera parameters
+      %                should be optimized. Follows same order as cam.fullmodel.
+      %
+      % Outputs:
+      %   newcam - The optimized camera
+      %   rmse   - Root-mean-square reprojection error
+      %   aic    - Akaike information criterion for reprojection errors, which
+      %            can help determine an appropriate degree of complexity for
+      %            the camera model (i.e. avoid overfitting).
+      %            NOTE: Only strictly applicable for unweighted fitting.
+      %
+      % Example:
+      %   % Optimize the 3 viewdir parameters (elements 6-8 in fullmodel).
+      %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, '00000111000000000000')
 
-        % Drop any points with NaN coordinates
-        nanrows = any(isnan(xyz), 2) | any(isnan(uv), 2);
-        xyz(nanrows, :) = [];
-        uv(nanrows, :) = [];
+      % Drop points with NaN coordinates
+      nanrows = any(isnan(xyz), 2) | any(isnan(uv), 2);
+      xyz(nanrows, :) = [];
+      uv(nanrows, :) = [];
 
-        fullmodel0 = cam.fullmodel; % Describes the initial camera being perturbed.
+      fullmodel0 = cam.fullmodel; % Describes the initial camera being perturbed.
 
-        % Convert fullmodel to boolean
-        freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
-        paramix = find(freeparams);
-        Nfree = length(paramix);
-        mbest = zeros(1, Nfree);
+      % Convert fullmodel to boolean
+      freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
+      paramix = find(freeparams);
+      Nfree = length(paramix);
+      mbest = zeros(1, Nfree);
 
-        newcam = @(m) camera(fullmodel0 + sparse(ones(1, Nfree), paramix, m, 1, length(fullmodel0)));
+      newcam = @(m) camera(fullmodel0 + sparse(ones(1, Nfree), paramix, m, 1, length(fullmodel0)));
 
-        if size(uv, 2) == 3
-            % Weighted least squares
-            misfit = @(m) reshape((project(newcam(m), xyz) - uv(:, 1:2)) .* uv(:, [3 3]), [], 1);
-        else
-            % Unweighted least squares
-            misfit = @(m) reshape(project(newcam(m), xyz) - uv, [], 1);
-        end
-        if isnan(misfit(mbest))
-            error('All GCPs must be in front of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement.
-        end
-        [mbest, RSS] = LMFnlsq(misfit, mbest); %WORKS SUPER FAST
+      if size(uv, 2) == 3
+        % Weighted least squares
+        misfit = @(m) reshape((project(newcam(m), xyz) - uv(:, 1:2)) .* uv(:, [3 3]), [], 1);
+      else
+        % Unweighted least squares
+        misfit = @(m) reshape(project(newcam(m), xyz) - uv, [], 1);
+      end
+      if isnan(misfit(mbest))
+        error('All GCPs must be in front of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement.
+      end
+      [mbest, RSS] = LMFnlsq(misfit, mbest);
 
-        Nuv = size(uv, 1);
-        newcam = newcam(mbest);
-        rmse = sqrt(RSS / Nuv);
-        aic = numel(uv) * log(RSS / numel(uv)) + 2 * Nfree;
+      Nuv = size(uv, 1);
+      newcam = newcam(mbest);
+      rmse = sqrt(RSS / Nuv);
+      aic = numel(uv) * log(RSS / numel(uv)) + 2 * Nfree;
     end
 
     % Sky: Horizon detection (works great!)
