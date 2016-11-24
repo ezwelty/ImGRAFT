@@ -3,6 +3,7 @@
 % TODO: Remove imgsz from fullmodel (since not needed in optimization)
 % TODO: Clean up optimizecam. Add support for named arguments.
 % TODO: Extend optimizecam to work with camera bundle.
+% TODO: Set principal point default when imgsz set.
 
 classdef camera
   % camera Distorted camera model
@@ -77,7 +78,6 @@ classdef camera
 
   properties (Dependent)
     R
-    K
     fmm
     fullmodel
     framebox
@@ -168,6 +168,49 @@ classdef camera
       if length(cam.sensorsz) == 1, cam.sensorsz(end + 1) = cam.sensorsz(end); end
     end
 
+    function cam = set.fmm(cam, value)
+      if isempty(cam.sensorsz)
+        error('Camera sensor size not set.');
+      else
+        cam.f = value .* cam.imgsz ./ cam.sensorsz;
+      end
+    end
+
+    function cam = set.R(cam, value)
+      % cos(elevation) != 0
+      if abs(value(3, 3)) ~= 1
+        w = asin(value(3, 3));
+        p = atan2(value(3, 1) / cos(w), value(3, 2) / cos(w));
+        k = atan2(-value(1, 3) / cos(w), -value(2, 3) / cos(w));
+      % cos(elevation) == 0
+      else
+        k = 0; % (unconstrained)
+        if value(3, 3) == 1
+            w = pi / 2;
+            p = -k + atan2(-value(1, 2), value(1, 1));
+        else
+            w = -pi / 2;
+            p = k + atan2(-value(1, 2), value(1, 1));
+        end
+      end
+      cam.viewdir = rad2deg([p w k]);
+    end
+
+    function cam = set.fullmodel(cam, value)
+      if length(value) < 20, error('Camera.fullmodel must have 20 elements.'), end
+      cam.xyz = value(1:3);
+      cam.imgsz = value(4:5); cam.viewdir = value(6:8); cam.f = value(9:10);
+      cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
+    end
+
+    function value = get.fmm(cam)
+      if isempty(cam.sensorsz)
+        error('Camera sensor size not set.');
+      else
+        value = cam.f .* cam.sensorsz ./ cam.imgsz;
+      end
+    end
+
     function value = get.R(cam)
       % Initial rotations of camera reference frame
       % (camera +z pointing up, with +x east and +y north)
@@ -192,26 +235,6 @@ classdef camera
                 C(2) * S(1)                     ,  C(1) * C(2)                     ,  S(2)       ];
     end
 
-    function cam = set.R(cam, value)
-      % cos(elevation) != 0
-      if abs(value(3, 3)) ~= 1
-        w = asin(value(3, 3));
-        p = atan2(value(3, 1) / cos(w), value(3, 2) / cos(w));
-        k = atan2(-value(1, 3) / cos(w), -value(2, 3) / cos(w));
-      % cos(elevation) == 0
-      else
-        k = 0; % (unconstrained)
-        if value(3, 3) == 1
-            w = pi / 2;
-            p = -k + atan2(-value(1, 2), value(1, 1));
-        else
-            w = -pi / 2;
-            p = k + atan2(-value(1, 2), value(1, 1));
-        end
-      end
-      cam.viewdir = rad2deg([p w k]);
-    end
-
     function value = get.fullmodel(cam)
       fullmodel = [cam.xyz, cam.imgsz, cam.viewdir, cam.f, cam.c, cam.k, cam.p];
       if length(fullmodel) == 20
@@ -221,32 +244,41 @@ classdef camera
       end
     end
 
-    function cam = set.fullmodel(cam, value)
-      if length(value) < 20, error('Camera.fullmodel must have 20 elements.'), end
-      cam.xyz = value(1:3);
-      cam.imgsz = value(4:5); cam.viewdir = value(6:8); cam.f = value(9:10);
-      cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
-    end
+    function cam = resize(cam, scale)
+      % RESIZE  Resize a camera image.
+      %
+      %   cam = cam.resize(scale)
+      %
+      % The focal length (f) and principal point (c) are adjusted as needed to
+      % account for the change in image size (imgsz).
+      %
+      % NOTE: Since an image can only contain whole pixels, the resulting image size
+      % may not equal the target image size. Because of this rounding, calls to
+      % this function may be non-reversible.
+      %
+      % Inputs:
+      %   scale - Scale factor [s] or desired image size [nx|ncols, ny|nrows]
 
-    function value = get.K(cam)
-      value = [cam.f(1) 0 cam.c(1); 0 cam.f(2) cam.c(2); 0 0 1];
-    end
-
-    function cam = set.fmm(cam, value)
-      if (isempty(cam.sensorsz))
-        error('Camera sensor size not set.');
+      if length(scale) > 1
+        imgsz1 = round(scale(1:2));
+        scale = imgsz1 ./ cam.imgsz;
+        if any(abs(diff(scale)) * cam.imgsz > 1)
+          error(['Aspect ratio of target image size (' num2str(imgsz1(1) / imgsz1(2), 2) ') too different from original (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') to be accounted for by rounding.']);
+        end
       else
-        cam.f = value .* cam.imgsz ./ cam.sensorsz;
+        imgsz1 = round(scale * cam.imgsz);
+        scale = imgsz1 ./ cam.imgsz;
       end
+      f = cam.f .* flip(scale);
+      c = ((imgsz1 + 1) / 2) + (cam.c - ((cam.imgsz + 1) / 2)) .* flip(scale);
+      % Save to new object
+      cam = cam;
+      cam.f = f;
+      cam.c = c;
+      cam.imgsz = imgsz1;
     end
 
-    function value = get.fmm(cam)
-      if (isempty(cam.sensorsz))
-        error('Camera sensor size not set.');
-      else
-        value = cam.f .* cam.sensorsz ./ cam.imgsz;
-      end
-    end
+    % plotting & geometry
 
     function value = get.framebox(cam)
       value = [0 cam.imgsz(1) 0 cam.imgsz(2)] + 0.5;
@@ -301,216 +333,103 @@ classdef camera
       value = [min(pyramid); max(pyramid)];
     end
 
-    function cam = resize(cam, scale)
-      % RESIZE  Resize a camera image.
-      %
-      %   cam = cam.resize(scale)
-      %
-      % The focal length (f) and principal point (c) are adjusted as needed to
-      % account for the change in image size (imgsz).
-      %
-      % NOTE: Since an image can only contain whole pixels, the resulting image size
-      % may not equal the target image size. Because of this rounding, calls to
-      % this function may be nonreversible.
-      %
-      % Inputs:
-      %   scale - Scale factor [s] or desired image size [ny|nrows, nx|ncols]
+    % projection
 
-      if length(scale) > 1
-        imgsz1 = round(scale(1:2));
-        scale = imgsz1 ./ cam.imgsz;
-        if any(abs(diff(scale)) * cam.imgsz > 1)
-          error(['Aspect ratio of target image size (' num2str(imgsz1(1) / imgsz1(2), 2) ') too different from original (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') to be accounted for by rounding.']);
-        end
-      else
-        imgsz1 = round(scale * cam.imgsz);
-        scale = imgsz1 ./ cam.imgsz;
-      end
-      f = cam.f .* flip(scale);
-      c = ((imgsz1 + 1) / 2) + (cam.c - ((cam.imgsz + 1) / 2)) .* flip(scale);
-      % Save to new object
-      cam = cam;
-      cam.f = f;
-      cam.c = c;
-      cam.imgsz = imgsz1;
+    function in = inframe(cam, uv)
+      box = cam.framebox;
+      in = uv(:, 1) >= box(1) & uv(:, 1) <= box(2) & uv(:, 2) >= box(3) & uv(:, 2) <= box(4);
     end
 
-    function [uv, depth, inframe] = project(cam, xyz)
+    function xy = normalize(cam, pts)
+      if size(pts, 2) == 2
+        % Convert image to camera coordinates
+        % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
+        xy = [(pts(:, 1) - cam.c(1)) / cam.f(1), (pts(:, 2) - cam.c(2)) / cam.f(2)];
+        % Remove distortion
+        xy = cam.undistort(xy);
+      elseif size(pts, 2) == 3
+        % Convert world to camera coordinates
+        xyz = bsxfun(@minus, pts, cam.xyz);
+        xyz = xyz * cam.R';
+        % Normalize by perspective division
+        xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
+        % Convert points behind camera to NaN
+        infront = xyz(:, 3) > 0;
+        xy(infront, :) = NaN;
+      end
+    end
+
+    function uv = normalized2image(cam, xy, distort)
+      if nargin < 3
+        distort = true;
+      end
+      if distort
+        xy = cam.distort(xy);
+      end
+      uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
+    end
+
+    function dxyz = normalized2world(cam, xy)
+      dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
+    end
+
+    function uv = project(cam, xyz)
       % PROJECT  Project 3D world coordinates to 2D image coordinates.
       %
-      %   [uv, depth, inframe] = cam.project(xyz)
+      %   uv = cam.project(xyz)
       %
       % Inputs:
       %   xyz - World coordinates [x1 y1 z1; x2 y2 z2; ...]
       %
       % Outputs:
       %   uv      - Image coordinates [u1 v1; u2 v2; ...]
-      %   depth   - Distance of each point from the camera
-      %   inframe - Boolean whether each point is in the image
       %
       % See also: camera.invproject
 
-      % Convert to camera coordinates
-      xyz = bsxfun(@minus, xyz, cam.xyz);
-      xyz = xyz * cam.R';
-
-      % Normalize by perspective division
-      xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
-
-      % Apply distortion
-      infront = xyz(:, 3) > 0;
-      xy(infront, :) = cam.distort(xy(infront, :));
-
-      % Convert to image coordinates
-      % [x', y'] = [fx * x + cx, fy * y + cy]
-      % (set points behind camera to NaN)
-      uv = nan(size(xy));
-      uv(infront, :) = [cam.f(1) * xy(infront, 1) + cam.c(1), cam.f(2) * xy(infront, 2) + cam.c(2)];
-
-      if nargout > 1
-        depth = xyz(:, 3);
-      end
-      if nargout > 2
-        % TODO: additional constraint for negative k1 and r2 > 1. (See orthorectification example) NOTE: Why? A point is either in or out of the image frame.
-        inframe = (depth > 0) & (uv(:, 1) >= 0.5) & (uv(:, 1) <= cam.imgsz(1) + 0.5) & (uv(:, 2) >= 0.5) & (uv(:, 2) <= cam.imgsz(2) + 0.5);
-      end
+      xy = cam.normalize(xyz);
+      uv = normalized2image(xy);
     end
 
-    function xyz = invproject(cam, uv, S, xy0)
-        % INVPROJECT  Project 2D image coordinates into 3D world coordinates.
-        %
-        %   xyz = cam.invproject(uv)
-        %   xyz = cam.invproject(uv, X, Y, Z)
-        %   xyz = cam.invproject(uv, X, Y, Z, xy0)
-        %
-        % Image coordinates are projected out the camera as rays. If a surface is specified, the intersections of the rays with the surface are returned (and NaN if intersection failed). If a surface is not specified, points of unit distance along the rays are returned.
-        % There are three ways to call this method:
-        %
-        % 1. Return a set of 3 coordinates which when projected
-        %    results in the pixel coordinates (uv).
-        %
-        %   xyz = cam.invproject(uv)
-        %
-        % 2. Inverse projection constrained to DEM surface.
-        %    (Project DEM to camera-view and use interpolation to find xyz.)
-        %
-        %   xyz=cam.invproject(uv,X,Y,Z)
-        %
-        %
-        % 3. Minimize misfit between projected DEM point and UV. (least squares)
-        %
-        %   xyz=cam.invproject(uv,X,Y,Z,xy0)
-        %
-        %
-        %
-        % Inputs:
-        %   uv: 2 column matrix with pixel coordinates.
-        %   [X,Y,Z]: DEM. (X,Y expected to be consistent with output from meshgrid.)
-        %   [xy0]: initial guess of some xy points on the DEM which are
-        %          consistent with pixel coordinates in uv.
-        %
-        % Outputs:
-        %   xyz: 3-column matrix with world coordinates consistent with
-        %        pixel coordinates in uv.
-        %
-        %
-        nanix = any(isnan(uv), 2);
-        anynans = any(nanix);
-        if anynans
-          uv(nanix, :) = [];
+    function xyz = invproject(cam, uv, S)
+      % INVPROJECT  Project 2D image coordinates out as 3D world coordinates.
+      %
+      %   xyz = cam.invproject(uv[, S])
+      %
+      % Image coordinates are projected out of the camera as rays.
+      % If a surface (S) is specified, the intersections with the surface are returned (or NaN if none).
+      % Otherwise, ray directions are returned.
+      %
+      % Inputs:
+      %   uv - Image coordinates [u1 v1; u2 v2; ...]
+      %   S  - Surface, either as a DEM object or an infinite plane
+      %        (defined as [a b c d], where ax + by + cz + d = 0)
+      %
+      % Outputs:
+      %   xyz - World coordinates of intersections [x1 y1 z1; x2 y2 z2; ...], or
+      %         ray directions [dx1 dy1 dz1; dx2 dy2 dz2; ...]
+      %
+      % See also: camera.project
+
+      % Convert to normalized camera coordinates
+      xy = cam.normalize(uv);
+      % Convert to ray direction vectors
+      xyz = cam.normalized2world(xy);
+      % Track valid coordinates
+      is_valid = ~any(isnan(xyz), 2);
+
+      if nargin == 2
+        % No surface: Return ray directions
+
+      elseif nargin > 2 && isnumeric(S) && length(S) == 4
+        % Plane: Return intersection of rays with plane
+        xyz(is_valid, :) = intersectRayPlane(cam.xyz, xyz(is_valid, :), S);
+
+      elseif nargin > 2 && strcmp(class(S), 'DEM')
+        % DEM: Return intersection of rays with DEM
+        for i = find(is_valid)
+          xyz(i, :) = intersectRayDEM([cam.xyz xyz(i, :)], S);
         end
-
-        npts = size(uv, 1);
-
-        % Convert to normalized camera coordinates
-        % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
-        xy = [(uv(:, 1) - cam.c(1)) / cam.f(1), (uv(:, 2) - cam.c(2)) / cam.f(2)];
-        xy = cam.undistort(xy);
-        % Convert to ray direction vectors [dx dy dz]
-        v = [xy ones(npts, 1)] * cam.R;
-
-        if nargin == 2
-          % No surface: Return points along rays ~ unit distance from camera
-          % v = bsxfun(@rdivide, v, sqrt(sum(v.^2, 2))); % force unit distance (slower)
-          xyz = bsxfun(@plus, v, cam.xyz);
-
-        elseif nargin > 2 && isnumeric(S) && length(S) == 4
-          % Plane: Return intersection of rays with plane
-          xyz = intersectRayPlane(cam.xyz, v, S);
-
-        elseif nargin > 2 && strcmp(class(S), 'DEM')
-          % DEM: Return intersection of rays with DEM
-          rays = [repmat(cam.xyz, npts, 1) v];
-          xyz = nan(size(rays, 1), 3);
-          for i = 1:size(rays, 1)
-            xyz(i, :) = intersectRayDEM(rays(i, :), S);
-          end
-
-        %   % DEM: Return intersection of rays with DEM
-        %   [X, Y, Z] = deal(S.X, S.Y, S.Z);
-        %   visible = voxelviewshed(X, Y, Z, cam.xyz);
-        %   Z = Z ./ visible;
-        %   xyz = nan(npts, 3);
-        %   if nargin < 4
-        %       [uv0, ~ , inframe] = cam.project([X(visible(:)), Y(visible(:)), Z(visible(:))]);
-        %       uv0(:,3) = X(visible(:));
-        %       uv0(:,4) = Y(visible(:));
-        %       uv0(:,5) = Z(visible(:));
-        %       uv0 = uv0(inframe, :);
-        %       if exist('scatteredInterpolant','file') > 1
-        %           Xscat = scatteredInterpolant(uv0(:,3), uv0(:,4), uv0(:,3));
-        %           Xscat.Points = uv0(:,1:2);
-        %           Yscat = Xscat; Yscat.Values = uv0(:,4);
-        %           Zscat = Xscat; Zscat.Values = uv0(:,5);
-        %       else
-        %           %fallback for older versions of matlab.
-        %           Xscat = TriScatteredInterp(uv0(:,3), uv0(:,4), uv0(:,3));  %#ok<REMFF1>
-        %           Xscat.X = uv0(:,1:2);
-        %           Yscat = Xscat; Yscat.V = uv0(:,4);
-        %           Zscat = Xscat; Zscat.V = uv0(:,5);
-        %       end
-        %       xy0 = [Xscat(uv(:,1), uv(:,2)) Yscat(uv(:,1), uv(:,2)) Zscat(uv(:,1), uv(:,2))];
-        %       xyz = xy0;
-        %
-        %       if anynans
-        %           xyz(find(~nanix), :) = xyz; %find necessary because it ensures that xyz can grow.
-        %           xyz(find(nanix), :) = nan;
-        %       end
-        %       return
-        %   end
-        %
-        %   if Y(2, 2) < Y(1, 1)
-        %       X = flipud(X); Y = flipud(Y); Z = flipud(Z);
-        %   end
-        %   if X(2, 2) < X(1, 1)
-        %       X = fliplr(X); Y = fliplr(Y); Z = fliplr(Z);
-        %   end
-        %
-        %   if exist('griddedInterpolant', 'file') > 1
-        %       zfun = griddedInterpolant(X', Y', Z'); %TODO: improve robustness.
-        %   else
-        %       %fallback for older versions of matlab. slower
-        %       zfun = @(x, y) interp2(X, Y, Z, x, y);
-        %   end
-        %   for ii = 1:length(uv)
-        %       %misfit=@(xy)sum((cam.project([xy zfun(xy(1),xy(2))])-uv(ii,1:2)).^2);
-        %       misfitlm = @(xy) (cam.project([xy(:)' zfun(xy(1), xy(2))]) - uv(ii, 1:2))'.^2;
-        %       try
-        %           %[xyz(ii,1:2),err]=fminunc(misfit,xy0(ii,1:2),optimset('LargeScale','off','Display','off','TolFun',0.001)); %TODO: remove dependency. can i use LMFnlsq?
-        %           xyz(ii, 1:2) = LMFnlsq(misfitlm, xy0(ii, 1:2));
-        %           xyz(ii, 3) = zfun(xyz(ii, 1), xyz(ii, 2));
-        %           if sum(misfitlm(xyz(ii, 1:2))) > 2^2
-        %               xyz(ii, :) = nan; %do not accept greater than 2 pixel error.
-        %           end
-        %       catch
-        %       end
-        %   end
-        end
-
-        if anynans
-            xyz(find(~nanix), :) = xyz; % find() necessary because it ensures that xyz can grow.
-            xyz(find(nanix), :) = NaN;
-        end
+      end
     end
 
     function [newcam, rmse, aic] = optimizecam(cam, xyz, uv, freeparams)
@@ -588,52 +507,6 @@ classdef camera
     %   ray_angles = [min(angles):ddeg:max(angles)]';
     %   X = dem.horizon(cam.xyz, ray_angles);
     % end
-
-    function in = inframe(cam, uv)
-      box = cam.framebox;
-      in = uv(:, 1) >= box(1) & uv(:, 1) <= box(2) & uv(:, 2) >= box(3) & uv(:, 2) <= box(4);
-    end
-
-    % function uv = idealize(cam, uv)
-    %   % Convert to normalized camera coordinates
-    %   % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
-    %   xy = cam.normalize(uv);
-    %   % Project back undistorted
-    %   uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
-    % end
-
-    function xy = normalize(cam, pts)
-      if size(pts, 2) == 2
-        % Convert image to camera coordinates
-        % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
-        xy = [(pts(:, 1) - cam.c(1)) / cam.f(1), (pts(:, 2) - cam.c(2)) / cam.f(2)];
-        % Remove distortion
-        xy = cam.undistort(xy);
-      elseif size(pts, 2) == 3
-        % Convert world to camera coordinates
-        xyz = bsxfun(@minus, pts, cam.xyz);
-        xyz = xyz * cam.R';
-        % Normalize by perspective division
-        xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
-        % Convert points behind camera to NaN
-        infront = xyz(:, 3) > 0;
-        xy(infront, :) = NaN;
-      end
-    end
-
-    function uv = normalized2image(cam, xy, distort)
-      if nargin < 3
-        distort = true;
-      end
-      if distort
-        xy = cam.distort(xy);
-      end
-      uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
-    end
-
-    function dxyz = normalized2world(cam, xy)
-      dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
-    end
 
     function h = plotDistortion(cam, scale)
       if nargin < 2
