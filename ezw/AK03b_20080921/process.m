@@ -5,13 +5,10 @@ addpath(genpath('.'))
 cd ezw/AK03b_20080921
 
 %% Initialize camera
-xyz = [497017.2113 6776153.168 163.52];
-oblang = [-22.5 -5 3];
-viewdir = [-(oblang(1) - 90) -oblang(2) oblang(3)] * pi / 180;
-% imgsz = flip([3872 2592]);
-% f = [3281.36];
-cam = camera(xyz, [], viewdir, []);
-images = loadimages('ezw/AK03b_20080921/images/AK03b_20080621_211611.JPG', cam);
+S = struct();
+S.xyz = [497017.2113 6776153.168 163.52];
+S.viewdir = [-22.5 -5 3];
+images = loadimages('ezw/AK03b_20080921/images/AK03b_20080621_211611.JPG', camera(S));
 cam = images(1).cam;
 
 %% Calibrate anchor image
@@ -22,7 +19,7 @@ gcp_names = fieldnames(svg.gcp);
 gcp_uv = cell2mat(struct2cell(svg.gcp));
 gcp_xyz = GCP{lower(gcp_names), {'x_wgs84', 'y_wgs84', 'z_hae'}};
 gcp = [gcp_uv gcp_xyz];
-[newcam, rmse, ~] = cam.optimizecam(gcp(:, 3:5), gcp(:, 1:2), '00000111111111000000')
+[newcam, rmse, ~] = cam.optimizecam(gcp(:, 3:5), gcp(:, 1:2), {'viewdir', 'f', 'c', 'k', [1:2]})
 images(1).cam = newcam;
 
 %% Load image & camera

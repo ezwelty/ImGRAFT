@@ -1,3 +1,4 @@
+% TODO: Preserve peripheral camera properties in optimizecam.
 % TODO: Clean up optimizecam. Add support for named arguments.
 % TODO: Extend optimizecam to work with camera bundle.
 % TODO: Limit voxelviewshed to camera view (not just position)
@@ -225,7 +226,9 @@ classdef camera
     end
 
     function cam = set.fullmodel(cam, value)
-      if length(value) < 20, error('Camera.fullmodel must have 20 elements.'), end
+      if length(value) < 20
+        error('Camera.fullmodel must have 20 elements.')
+      end
       cam.xyz = value(1:3);
       cam.imgsz = value(4:5); cam.viewdir = value(6:8); cam.f = value(9:10);
       cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
@@ -386,7 +389,7 @@ classdef camera
     function in = infront(cam, xyz)
       xyz = bsxfun(@minus, xyz, cam.xyz);
       xyz = xyz * cam.R';
-      infront = xyz(:, 3) > 0;
+      in = xyz(:, 3) > 0;
     end
 
     function xy = image2camera(cam, uv)
@@ -410,7 +413,7 @@ classdef camera
       xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
       % Convert points behind camera to NaN
       infront = xyz(:, 3) > 0;
-      xy(infront, :) = NaN;
+      xy(~infront, :) = NaN;
     end
 
     function uv = camera2image(cam, xy, distort)
@@ -513,37 +516,45 @@ classdef camera
       %   % Optimize the 3 viewdir parameters (elements 6-8 in fullmodel).
       %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, '00000111000000000000')
 
-      % Drop points with NaN coordinates
-      nanrows = any(isnan(xyz), 2) | any(isnan(uv), 2);
-      xyz(nanrows, :) = [];
-      uv(nanrows, :) = [];
+      % Discard invalid points
+      is_valid = cam.infront(xyz) & ~(any(isnan(xyz), 2) | any(isnan(uv), 2));
+      xyz = xyz(is_valid, :);
+      uv = uv(is_valid, :);
+      n_pts = size(xyz, 1);
+      if n_pts == 0
+        error('No valid control points found');
+      end
 
-      fullmodel0 = cam.fullmodel; % Describes the initial camera being perturbed.
+      % Convert freeparams to logical
+      freeparams = camera.parseFreeparams(freeparams);
 
-      % Convert fullmodel to boolean
-      freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
-      paramix = find(freeparams);
-      Nfree = length(paramix);
-      mbest = zeros(1, Nfree);
+      % Setup camera optimization function
+      newcam = cam;
+      fullmodel0 = cam.fullmodel;
+      n_free = sum(freeparams);
+      % Load set method
+      meta = ?camera;
+      fmeta = findobj(meta.PropertyList, 'Name', 'fullmodel');
+      ff = fmeta.SetMethod;
+      newcamf = @(m) ff(newcam, fullmodel0 + sparse(ones(1, n_free), find(freeparams), m, 1, length(fullmodel0)));
 
-      newcam = @(m) camera(fullmodel0 + sparse(ones(1, Nfree), paramix, m, 1, length(fullmodel0)));
-
+      % Setup projection error optimization function
       if size(uv, 2) == 3
         % Weighted least squares
-        misfit = @(m) reshape((project(newcam(m), xyz) - uv(:, 1:2)) .* uv(:, [3 3]), [], 1);
+        misfit = @(m) reshape((project(newcamf(m), xyz) - uv(:, 1:2)) .* uv(:, [3 3]), [], 1);
       else
         % Unweighted least squares
-        misfit = @(m) reshape(project(newcam(m), xyz) - uv, [], 1);
+        misfit = @(m) reshape(project(newcamf(m), xyz) - uv, [], 1);
       end
-      if isnan(misfit(mbest))
-        error('All GCPs must be in front of the initial camera location for optimizecam to work.'); %TODO: write better explanation. and remove requirement.
-      end
-      [mbest, RSS] = LMFnlsq(misfit, mbest);
 
-      Nuv = size(uv, 1);
-      newcam = newcam(mbest);
-      rmse = sqrt(RSS / Nuv);
-      aic = numel(uv) * log(RSS / numel(uv)) + 2 * Nfree;
+      % Run optimization
+      m0 = zeros(1, n_free);
+      [mbest, rss] = LMFnlsq(misfit, m0);
+
+      % Compile results
+      newcam = newcamf(mbest);
+      rmse = sqrt(rss / n_pts);
+      aic = numel(uv) * log(rss / numel(uv)) + 2 * n_free;
     end
 
     % Sky: Horizon detection (works great!)
@@ -575,6 +586,37 @@ classdef camera
       e = sum((pxyB(:, 1:2) - xyB).^2, 2);
     end
 
+    function freeparams = parseFreeparams(freeparams)
+      % Convert fullmodel to boolean
+      if ischar(freeparams)
+        % Convert to single-cell array
+        freeparams = {freeparams};
+      end
+      if iscell(freeparams)
+        % Parse cell array (given as name-element pairs)
+        % e.g. {'viewdir', 'xyz', 3} => All viewdir elements and 3rd xyz element
+        params = {'xyz', 'imgsz', 'viewdir', 'f', 'c', 'k', 'p'};
+        param_indices = {[1:3], [4:5], [6:8], [9:10], [11:12], [13:18], [19:20]};
+        is_param = cellfun(@ischar, freeparams);
+        is_pos = cellfun(@isnumeric, freeparams);
+        is_free = false(max(cell2mat(param_indices)), 1);
+        for i = find(is_param)
+          is_match = strcmpi(freeparams{i}, params);
+          if any(is_match)
+            ind = param_indices{is_match};
+            if i < length(freeparams) && is_pos(i + 1)
+              ind = ind(freeparams{i + 1});
+            end
+            is_free(ind) = true;
+          end
+        end
+        freeparams = is_free;
+      else
+        % Convert numeric or character string to logical
+        freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
+      end
+    end
+
   end
 
   methods (Access = private)
@@ -590,18 +632,18 @@ classdef camera
       % Outputs:
       %   xy - distorted normalized camera coordinates [x1 y1; x2 y2; ...]
 
-      if any([cam.k, cam.p] ~= 0)
+      if any([cam.k, cam.p])
         % r = sqrt(x^2 + y^2)
         r2 = sum(xy.^2, 2);
-        if any(cam.k ~= 0)
+        if any(cam.k)
           % Radial lens distortion
           % dr = (1 + k1 * r^2 + k2 * r^4 + k3 * r^6) / (1 + k4 * r^2 + k5 * r^4 + k6 * r^6)
           dr = 1 + cam.k(1) * r2 + cam.k(2) * r2.^2 + cam.k(3) * r2.^3;
-          if any(cam.k(4:6) ~= 0)
+          if any(cam.k(4:6))
             dr = dr ./ (1 + cam.k(4) * r2 + cam.k(5) * r2.^2 + cam.k(6) * r2.^3);
           end
         end
-        if any(cam.p ~= 0)
+        if any(cam.p)
           % Tangential lens distortion
           % dtx = 2xy * p1 + p2 * (r^2 + 2x^2)
           % dty = p1 * (r^2 + 2y^2) + 2xy * p2
@@ -612,10 +654,10 @@ classdef camera
         % Compute distorted camera coordinates
         % x' = dr * x + dtx
         % y' = dr * y + dty
-        if any(cam.k ~= 0)
+        if any(cam.k)
           xy = bsxfun(@times, xy, dr);
         end
-        if any(cam.p ~= 0)
+        if any(cam.p)
           xy = xy + [dtx dty];
         end
       end
@@ -632,7 +674,7 @@ classdef camera
       % Outputs:
       %   xy - normalized camera coordinates [x1 y1; x2 y2; ...]
 
-      if any([cam.k, cam.p] ~= 0)
+      if any([cam.k, cam.p])
 
         % May fail for large negative k1.
         if cam.k(1) < -0.5
@@ -642,7 +684,7 @@ classdef camera
         % If only k1 is nonzero, use closed form solution.
         % Cubic roots solution from Numerical Recipes in C 2nd Edition:
         % http://apps.nrbook.com/c/index.html (pages 183-185)
-        if sum([cam.k cam.p] ~= 0) == 1 && cam.k(1) ~= 0
+        if sum([cam.k cam.p] ~= 0) == 1 && cam.k(1)
           phi = atan2(xy(:, 2), xy(:, 1));
           Q = -1 / (3 * cam.k(1));
           R = -xy(:, 1) ./ (2 * cam.k(1) * cos(phi));
@@ -665,15 +707,15 @@ classdef camera
           for n = 1:20
             % r = sqrt(x^2 + y^2)
             r2 = sum(xy.^2, 2);
-            if any(cam.k ~= 0)
+            if any(cam.k)
               % Radial lens distortion
               % dr = (1 + k1 * r^2 + k2 * r^4 + k3 * r^6) / (1 + k4 * r^2 + k5 * r^4 + k6 * r^6)
               dr = 1 + cam.k(1) * r2 + cam.k(2) * r2.^2 + cam.k(3) * r2.^3;
-              if any(cam.k(4:6) ~= 0)
+              if any(cam.k(4:6))
                 dr = dr ./ (1 + cam.k(4) * r2 + cam.k(5) * r2.^2 + cam.k(6) * r2.^3);
               end
             end
-            if any(cam.p ~= 0)
+            if any(cam.p)
               % Tangential lens distortion
               % dtx = 2xy * p1 + p2 * (r^2 + 2x^2)
               % dty = p1 * (r^2 + 2y^2) + 2xy * p2
@@ -684,9 +726,9 @@ classdef camera
             % Remove distortion
             % x = (x' - dtx) / dr
             % y = (y' - dty) / dr
-            if any(cam.p ~= 0)
+            if any(cam.p)
               xy = xyi - [dtx dty];
-              if any(cam.k ~= 0)
+              if any(cam.k)
                 xy = bsxfun(@rdivide, xy, dr);
               end
             else

@@ -48,7 +48,7 @@ title(sprintf('Reprojection errors (RMSE = %.1fpx)', rmse))
 % TODO: Prepare best-of-class bedrock DEM
 % TODO: Prepare glacier outlines
 % TODO: Prepare glacier terminus heights
-[Z, x, y] = geoimread('/volumes/science/data/columbia/dem/2004 Aerometric/20050811_2m.tif');
+[Z, x, y] = geoimread('/volumes/science-b/data/columbia/dem/2004 Aerometric/20050811_2m.tif');
 dem = DEM(Z, x, y);
 cdem = dem.crop([4.9e5 5e5], [6.77e6 6.785e6], [0 Inf]);
 smdem = cdem.resize(0.1);
