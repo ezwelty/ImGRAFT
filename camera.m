@@ -1,7 +1,6 @@
-% TODO: Preserve peripheral camera properties in optimizecam.
-% TODO: Clean up optimizecam. Add support for named arguments.
-% TODO: Extend optimizecam to work with camera bundle.
-% TODO: Limit voxelviewshed to camera view (not just position)
+% TODO: optimizeCams – Split error function into camera generation and errors
+% TODO: optimizeCams – Flexible expansion of inputs
+% TODO: optimizeCams – Remove fixparams from flexparams?
 
 classdef camera
   % camera Distorted camera model
@@ -234,14 +233,6 @@ classdef camera
       cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
     end
 
-    function value = get.fmm(cam)
-      if isempty(cam.sensorsz)
-        error('Camera sensor size not set.');
-      else
-        value = cam.f .* cam.sensorsz ./ cam.imgsz;
-      end
-    end
-
     function value = get.R(cam)
       % Initial rotations of camera reference frame
       % (camera +z pointing up, with +x east and +y north)
@@ -264,6 +255,14 @@ classdef camera
       value = [ C(1) * C(3) + S(1) * S(2) * S(3),  C(1) * S(2) * S(3) - C(3) * S(1), -C(2) * S(3); ...
                 C(3) * S(1) * S(2) - C(1) * S(3),  S(1) * S(3) + C(1) * C(3) * S(2), -C(2) * C(3); ...
                 C(2) * S(1)                     ,  C(1) * C(2)                     ,  S(2)       ];
+    end
+
+    function value = get.fmm(cam)
+      if isempty(cam.sensorsz)
+        error('Camera sensor size not set.');
+      else
+        value = cam.f .* cam.sensorsz ./ cam.imgsz;
+      end
     end
 
     function value = get.fullmodel(cam)
@@ -501,20 +500,25 @@ classdef camera
       %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
       %   uv         - Image coordinates [u1 v1; u2 v2; ...]
       %                (optional 3rd column may specify weights)
-      %   freeparams - 20-element vector describing which camera parameters
-      %                should be optimized. Follows same order as cam.fullmodel.
+      %   freeparams - Either a string, array, or 20-element vector describing
+      %                which parameters should be optimized (see Examples).
       %
       % Outputs:
-      %   newcam - The optimized camera
+      %   newcam - Optimized camera
       %   rmse   - Root-mean-square reprojection error
       %   aic    - Akaike information criterion for reprojection errors, which
       %            can help determine an appropriate degree of complexity for
       %            the camera model (i.e. avoid overfitting).
       %            NOTE: Only strictly applicable for unweighted fitting.
       %
-      % Example:
-      %   % Optimize the 3 viewdir parameters (elements 6-8 in fullmodel).
-      %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, '00000111000000000000')
+      % Examples:
+      %   % Optimize all elements of viewdir:
+      %   cam.optimizecam(xyz, uv, '00000111000000000000')
+      %   cam.optimizecam(xyz, uv, 'viewdir')
+      %   cam.optimizecam(xyz, uv, {'viewdir'})
+      %   % Also optimize the third (z) element of xyz:
+      %   cam.optimizecam(xyz, uv, '00100111000000000000')
+      %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
 
       % Discard invalid points
       is_valid = cam.infront(xyz) & ~(any(isnan(xyz), 2) | any(isnan(uv), 2));
@@ -537,15 +541,7 @@ classdef camera
       fmeta = findobj(meta.PropertyList, 'Name', 'fullmodel');
       ff = fmeta.SetMethod;
       newcamf = @(m) ff(newcam, fullmodel0 + sparse(ones(1, n_free), find(freeparams), m, 1, length(fullmodel0)));
-
-      % Setup projection error optimization function
-      if size(uv, 2) == 3
-        % Weighted least squares
-        misfit = @(m) reshape((project(newcamf(m), xyz) - uv(:, 1:2)) .* uv(:, [3 3]), [], 1);
-      else
-        % Unweighted least squares
-        misfit = @(m) reshape(project(newcamf(m), xyz) - uv, [], 1);
-      end
+      misfit = @(m) reshape(projerror(newcamf(m), xyz, uv), [], 1);
 
       % Run optimization
       m0 = zeros(1, n_free);
@@ -555,6 +551,14 @@ classdef camera
       newcam = newcamf(mbest);
       rmse = sqrt(rss / n_pts);
       aic = numel(uv) * log(rss / numel(uv)) + 2 * n_free;
+    end
+
+    function e = projerror(cam, xyz, uv)
+      puv = cam.project(xyz);
+      e = puv - uv(:, 1:2);
+      if size(uv, 2) == 3
+        e = e .* uv(:, [3 3]);
+      end
     end
 
     % Sky: Horizon detection (works great!)
@@ -615,6 +619,45 @@ classdef camera
         % Convert numeric or character string to logical
         freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
       end
+    end
+
+    % cams = {cam, cam};
+    % flexparams = {{'viewdir'}, {'viewdir'}};
+    % fixparams = {'f', 'c', 'k', [1:2]};
+    % xyz = {xyzi, xyzi};
+    % uv = {uvi, uvi};
+
+    function [newcams, rmse, aic] = optimizeCams(cams, xyz, uv, flexparams, fixparams)
+
+      % Discard invalid points
+      for i = 1:length(xyz)
+        is_valid = cams{i}.infront(xyz{i}) & ~(any(isnan(xyz{i}), 2) | any(isnan(uv{i}), 2));
+        xyz{i} = xyz{i}(is_valid, :);
+        uv{i} = uv{i}(is_valid, :);
+        if size(xyz{i}, 1) == 0
+          error(['No valid control points found for camera ' str2num(i)]);
+        end
+      end
+
+      % Initialize
+      flexparams = cellfun(@camera.parseFreeparams, flexparams, 'UniformOutput', false);
+      fixparams = camera.parseFreeparams(fixparams);
+      n_flex = cellfun(@sum, flexparams);
+      n_fix = sum(fixparams);
+
+      % Optimize
+      ef = @(m) reshape(cell2mat(cellfun(@projerror, camera.updateCams(m, cams, flexparams, fixparams), xyz, uv, 'UniformOutput', false)), [], 1);
+      m0 = zeros(n_fix + sum(n_flex), 1);
+      mbest = LMFnlsq(ef, m0);
+
+      % Compile results
+      newcams = camera.updateCams(mbest, cams, flexparams, fixparams);
+      e = cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false);
+      ssq = cellfun(@(x) sum(sum(x.^2, 2)), e);
+      n_pts = cellfun(@(x) size(x, 1), xyz);
+      rmse = sqrt(ssq ./ n_pts);
+      n_uv = cellfun(@numel, uv);
+      aic = n_uv .* log(ssq ./ n_uv) + 2 * (n_fix + n_flex);
     end
 
   end
@@ -736,6 +779,23 @@ classdef camera
             end
           end
         end
+      end
+    end
+
+    function cams = updateCams(m, cams, flexparams, fixparams)
+      % Initialize
+      n_cams = length(cams);
+      n_flex = cellfun(@sum, flexparams);
+      n_fix = sum(fixparams);
+      % m -> fullmodel for each camera
+      temp = zeros(1, 20);
+      temp(fixparams) = m(1:n_fix);
+      m(1:n_fix) = [];
+      for i = 1:n_cams
+        d = temp;
+        d(flexparams{i}) = m(1:n_flex(i));
+        cams{i}.fullmodel = cams{i}.fullmodel + d;
+        m(1:n_flex(i)) = [];
       end
     end
 

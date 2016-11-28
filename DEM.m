@@ -1,4 +1,6 @@
-% TODO: Compute x, y, X, Y only as needed, and expire instead of automatically updating.
+% TODO: horizon – Reshape inputs as needed
+% TODO: horizon – Skip check of z-intersection
+% TODO: voxelviewshed – move to DEM model
 
 classdef DEM < handle
   % DEM Digital elevation model
@@ -126,44 +128,6 @@ classdef DEM < handle
       if size(dem.Z, 1) ~= dem.ny, dem = dem.updateY; end
       dem = dem.updateZ;
     end
-
-    % Dependent properties
-    % function value = get.nx(dem)
-    %   value = size(dem.Z, 2);
-    % end
-    % function value = get.ny(dem)
-    %   value = size(dem.Z, 1);
-    % end
-    % function value = get.dx(dem)
-    %   value = abs(diff(dem.xlim)) / dem.nx;
-    % end
-    % function value = get.dy(dem)
-    %   value = abs(diff(dem.ylim)) / dem.ny;
-    % end
-    % function value = get.min(dem)
-    %   value = [min(dem.xlim), min(dem.ylim), min(min(dem.Z))];
-    % end
-    % function value = get.max(dem)
-    %   value = [max(dem.xlim), max(dem.ylim), max(max(dem.Z))];
-    % end
-    % function value = get.x(dem)
-    %   value = (dem.min(1) + dem.dx / 2):dem.dx:(dem.max(1) - dem.dx / 2);
-    %   if (dem.xlim(1) > dem.xlim(2))
-    %     value = flip(value);
-    %   end
-    % end
-    % function value = get.y(dem)
-    %   value = (dem.min(2) + dem.dy / 2):dem.dy:(dem.max(2) - dem.dy / 2);
-    %   if (dem.ylim(1) > dem.ylim(2))
-    %     value = flip(value);
-    %   end
-    % end
-    % function value = get.X(dem)
-    %   value = repmat(dem.x, dem.ny, 1);
-    % end
-    % function value = get.Y(dem)
-    %   value = repmat(dem.y', 1, dem.nx);
-    % end
 
     function dem = crop(dem, xlim, ylim, zlim)
       % CROP  Crop a DEM.
@@ -312,7 +276,71 @@ classdef DEM < handle
       nans = xi < 1 | xi > dem.nx | yi < 1 | yi > dem.ny;
       xi(nans) = NaN;
       yi(nans) = NaN;
-      ind = sub2ind(size(dem.Z), yi, xi);
+      ind = sub2ind([dem.ny dem.nx], yi, xi);
+    end
+
+    function xyz = ind2xyz(dem, ind)
+      [yi, xi] = ind2sub([dem.ny dem.nx], ind);
+      xyz = [dem.x(xi)' dem.y(yi)' dem.Z(ind)];
+    end
+
+    function [X, edge] = horizon(dem, xyz, angles)
+      if nargin < 3
+        angles = [0:1:359]';
+      end
+      n_angles = length(angles);
+      dx = cosd(angles); dy = sind(angles);
+      rays = [repmat(xyz, n_angles, 1) dx dy repmat(0, n_angles, 1)];
+      X = nan(n_angles, 3);
+      in = nan(n_angles, 1);
+      for i = 1:n_angles
+        ray = rays(i, :);
+        cells = traverseRayDEM(ray, dem);
+        % Convert to upper-left matrix indices (flip y)
+        xi = cells(:, 1); yi = dem.ny - (cells(:, 2) - 1);
+        % Retrieve true x,y,z based on cell xy
+        x = dem.ind2xyz(sub2ind([dem.ny dem.nx], yi, xi));
+        elevation = atand((x(:, 3) - xyz(3)) ./ sqrt((x(:, 1) - xyz(1)).^2 + (x(:, 2) - xyz(2)).^2));
+        [~, i_max] = nanmax(elevation);
+        if nargout > 1
+          if i_max == length(elevation) || all(isnan(elevation((i_max + 1):end)))
+            edge(i) = true;
+          else
+            edge(i) = false;
+          end
+        end
+        X(i, :) = x(i_max, :);
+      end
+    end
+
+    function vis = visible(dem, xyz)
+      X = dem.X(:) - xyz(1);
+      Y = dem.Y(:) - xyz(2);
+      Z = dem.Z(:) - xyz(3);
+      d = sqrt(X.^2 + Y.^2 + Z.^2);
+      x = (atan2(Y, X) + pi) / (pi * 2);
+      y = Z ./ d;
+
+      [~, ix] = sortrows([round(sqrt((X / dem.dx).^2 + (Y / dem.dy).^2)) x]); %round
+
+      loopix = find(diff(x(ix)) < 0);
+      vis = true(size(X, 1), 1);
+
+      maxd = max(d); % TODO: optimize
+      N = ceil(2 * pi / (dem.dx / maxd)); % number of points in voxel horizon
+
+      voxx = (0:N)' / N;
+      voxy = zeros(size(voxx)) - Inf;
+
+      for k = 1:length(loopix) - 1
+          lp = ix((loopix(k) + 1):loopix(k + 1));
+          lp = lp([end 1:end 1]);
+          yy = y(lp); xx = x(lp);
+          xx(1) = xx(1) - 1; xx(end) = xx(end) + 1; % TODO: why?
+          vis(lp(2:end - 1)) = interp1q(voxx, voxy, xx(2:end - 1)) < yy(2:end - 1);
+          voxy = max(voxy, interp1q(xx, yy, voxx));
+      end
+      vis = reshape(vis, [dem.ny dem.nx]);
     end
 
   end % methods
