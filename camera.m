@@ -1,7 +1,3 @@
-% TODO: optimizeCams – Split error function into camera generation and errors
-% TODO: optimizeCams – Flexible expansion of inputs
-% TODO: optimizeCams – Remove fixparams from flexparams?
-
 classdef camera
   % camera Distorted camera model
   %
@@ -82,6 +78,8 @@ classdef camera
   end
 
   methods
+
+    % Camera creation
 
     function cam = camera(varargin)
       % CAMERA  Construct a new camera object.
@@ -308,7 +306,7 @@ classdef camera
       cam.imgsz = imgsz1;
     end
 
-    % plotting & geometry
+    % Camera geometry
 
     function value = get.framebox(cam)
       value = [0 cam.imgsz(1) 0 cam.imgsz(2)] + 0.5;
@@ -378,7 +376,7 @@ classdef camera
       axis equal; hold off;
     end
 
-    % projection
+    % Transformations
 
     function in = inframe(cam, uv)
       box = cam.framebox;
@@ -484,7 +482,9 @@ classdef camera
       end
     end
 
-    function [newcam, rmse, aic] = optimizecam(cam, xyz, uv, freeparams)
+    % Calibration
+
+    function [newcam, rmse, aic] = optimize(cam, xyz, uv, freeparams)
       % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
       %
       %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
@@ -520,37 +520,7 @@ classdef camera
       %   cam.optimizecam(xyz, uv, '00100111000000000000')
       %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
 
-      % Discard invalid points
-      is_valid = cam.infront(xyz) & ~(any(isnan(xyz), 2) | any(isnan(uv), 2));
-      xyz = xyz(is_valid, :);
-      uv = uv(is_valid, :);
-      n_pts = size(xyz, 1);
-      if n_pts == 0
-        error('No valid control points found');
-      end
-
-      % Convert freeparams to logical
-      freeparams = camera.parseFreeparams(freeparams);
-
-      % Setup camera optimization function
-      newcam = cam;
-      fullmodel0 = cam.fullmodel;
-      n_free = sum(freeparams);
-      % Load set method
-      meta = ?camera;
-      fmeta = findobj(meta.PropertyList, 'Name', 'fullmodel');
-      ff = fmeta.SetMethod;
-      newcamf = @(m) ff(newcam, fullmodel0 + sparse(ones(1, n_free), find(freeparams), m, 1, length(fullmodel0)));
-      misfit = @(m) reshape(projerror(newcamf(m), xyz, uv), [], 1);
-
-      % Run optimization
-      m0 = zeros(1, n_free);
-      [mbest, rss] = LMFnlsq(misfit, m0);
-
-      % Compile results
-      newcam = newcamf(mbest);
-      rmse = sqrt(rss / n_pts);
-      aic = numel(uv) * log(rss / numel(uv)) + 2 * n_free;
+      [newcam, rmse, aic] = camera.optimizeCams(cam, xyz, uv, freeparams);
     end
 
     function e = projerror(cam, xyz, uv)
@@ -591,7 +561,7 @@ classdef camera
     end
 
     function freeparams = parseFreeparams(freeparams)
-      % Convert fullmodel to boolean
+      % Convert freeparams to boolean fullmodel selector
       if ischar(freeparams)
         % Convert to single-cell array
         freeparams = {freeparams};
@@ -621,13 +591,25 @@ classdef camera
       end
     end
 
-    % cams = {cam, cam};
-    % flexparams = {{'viewdir'}, {'viewdir'}};
-    % fixparams = {'f', 'c', 'k', [1:2]};
-    % xyz = {xyzi, xyzi};
-    % uv = {uvi, uvi};
-
     function [newcams, rmse, aic] = optimizeCams(cams, xyz, uv, flexparams, fixparams)
+
+      % Convert inputs to cell arrays
+      if ~iscell(cams), cams = {cams}; end
+      if ~iscell(xyz), xyz = {xyz}; end
+      if ~iscell(uv), uv = {uv}; end
+      if ~iscell(flexparams) || ~iscell(flexparams{1}), flexparams = {flexparams}; end
+      % Expand inputs
+      n_cams = length(cams);
+      if ~rem(n_cams, length(xyz)), xyz = repmat(xyz, 1, n_cams / length(xyz)); end
+      if ~rem(n_cams, length(uv)), uv = repmat(uv, 1, n_cams / length(uv)); end
+      if ~rem(n_cams, length(flexparams)), flexparams = repmat(flexparams, 1, n_cams / length(flexparams)); end
+      if any(n_cams ~= [length(xyz), length(uv), length(flexparams)])
+        error('Input arrays cannot be coerced to equal length')
+      end
+      % Enforce defaults
+      if nargin < 5
+        fixparams = {};
+      end
 
       % Discard invalid points
       for i = 1:length(xyz)
@@ -658,6 +640,23 @@ classdef camera
       rmse = sqrt(ssq ./ n_pts);
       n_uv = cellfun(@numel, uv);
       aic = n_uv .* log(ssq ./ n_uv) + 2 * (n_fix + n_flex);
+    end
+
+    function cams = updateCams(m, cams, flexparams, fixparams)
+      % Initialize
+      n_cams = length(cams);
+      n_flex = cellfun(@sum, flexparams);
+      n_fix = sum(fixparams);
+      % m -> fullmodel for each camera
+      temp = zeros(1, 20);
+      temp(fixparams) = m(1:n_fix);
+      m(1:n_fix) = [];
+      for i = 1:n_cams
+        d = temp;
+        d(flexparams{i}) = m(1:n_flex(i));
+        cams{i}.fullmodel = cams{i}.fullmodel + d;
+        m(1:n_flex(i)) = [];
+      end
     end
 
   end
@@ -779,23 +778,6 @@ classdef camera
             end
           end
         end
-      end
-    end
-
-    function cams = updateCams(m, cams, flexparams, fixparams)
-      % Initialize
-      n_cams = length(cams);
-      n_flex = cellfun(@sum, flexparams);
-      n_fix = sum(fixparams);
-      % m -> fullmodel for each camera
-      temp = zeros(1, 20);
-      temp(fixparams) = m(1:n_fix);
-      m(1:n_fix) = [];
-      for i = 1:n_cams
-        d = temp;
-        d(flexparams{i}) = m(1:n_flex(i));
-        cams{i}.fullmodel = cams{i}.fullmodel + d;
-        m(1:n_flex(i)) = [];
       end
     end
 

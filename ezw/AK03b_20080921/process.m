@@ -2,7 +2,6 @@
 matlab -display :0.0 -nodesktop
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
-cd ezw/AK03b_20080921
 
 %% Initialize camera
 S = struct();
@@ -18,8 +17,7 @@ svg = svg2struct('ezw/AK03b_20080921/images/AK03b_20080621_211611.svg');
 gcp_names = fieldnames(svg.gcp);
 gcp_uv = cell2mat(struct2cell(svg.gcp));
 gcp_xyz = GCP{lower(gcp_names), {'x_wgs84', 'y_wgs84', 'z_hae'}};
-gcp = [gcp_uv gcp_xyz];
-[newcam, rmse, ~] = cam.optimizecam(gcp(:, 3:5), gcp(:, 1:2), {'viewdir', 'f', 'c', 'k', [1:2]})
+[newcam, rmse, ~] = cam.optimize(gcp_xyz, gcp_uv, {'viewdir', 'f', 'c', 'k', [1:2]})
 images(1).cam = newcam;
 
 %% Load image & camera
