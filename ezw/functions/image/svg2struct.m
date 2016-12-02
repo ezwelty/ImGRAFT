@@ -27,6 +27,7 @@ function S = svg2struct(svg, scale)
         if images.getLength > 1
           warning('Multiple images found. Using first image to calculate scale factor.')
         end
+        % TODO Use image transform tag instead? e.g. transform="matrix(0.24 0 0 0.24 -0.0015 0)"
         imgsz = [str2double(char(svg.getElementsByTagName('image').item(0).getAttribute('width'))), str2double(char(svg.getElementsByTagName('image').item(0).getAttribute('height')))];
         scale = imgsz ./ viewsz;
       else
@@ -38,7 +39,7 @@ function S = svg2struct(svg, scale)
       end
     end
     % Select Adobe Illustrator layers
-    svg = svg.getElementsByTagName('g');
+    svg = svg.getElementsByTagName('svg');
   end
 
   % Initialize structure
@@ -48,7 +49,11 @@ function S = svg2struct(svg, scale)
   for i = 0:(svg.getLength - 1)
     child = svg.item(i);
     tag = char(child.getNodeName);
-    if any(strcmp(tag, {'#text', 'image'}))
+    if ismember(tag, {'svg'})
+      S = svg2struct(child, scale);
+      break
+    end
+    if ismember(tag, {'#comment', '#text', 'image'})
       continue
     end
     name = char(child.getAttribute('id'));
@@ -89,11 +94,11 @@ function S = svg2struct(svg, scale)
 
   % % Plot (debug)
   % fields = fieldnames(S);
-  % if verbose && ~isempty(fields)
+  % if ~isempty(fields)
   %   figure()
   %   set(gcf, 'color', 'white');
   %   N = length(fields);
-  %   for n = 1:N
+  %   for n = 2:N
   %     % basic plot
   %     subplot(N, 1, n)
   %     name = fields{n};
