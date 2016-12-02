@@ -497,7 +497,7 @@ classdef camera
 
     % Calibration
 
-    function [newcam, rmse, aic] = optimize(cam, xyz, uv, freeparams)
+    function [newcam, fit] = optimize(cam, xyz, uv, freeparams)
       % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
       %
       %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
@@ -533,11 +533,11 @@ classdef camera
       %   cam.optimizecam(xyz, uv, '00100111000000000000')
       %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
 
-      [newcam, rmse, aic] = camera.optimizeCams(cam, xyz, uv, freeparams);
+      [newcam, fit] = camera.optimizeCams(cam, xyz, uv, freeparams);
       newcam = newcam{1};
     end
 
-    function [newcam, rmse, aic] = optimizeR(cam, uv, uv2, angles)
+    function [newcam, fit] = optimizeR(cam, uv, uv2, angles)
       % Enforce defaults
       if nargin < 4
         angles = 1:3;
@@ -550,11 +550,19 @@ classdef camera
       ray_direction = true;
       ef = @(d) reshape(projerror(camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
       % Optimize
-      [d, ssq] = LMFnlsq(ef, zeros(length(angles), 1));
+      [d, rss] = LMFnlsq(ef, zeros(length(angles), 1));
       % Compile results
       newcam = camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
-      rmse = sqrt(ssq ./ size(uv, 1));
-      aic = numel(uv) .* log(ssq ./ numel(uv)) + 2 * length(angles);
+      k = length(angles);
+      n = size(uv, 1);
+      fit = struct();
+      fit.rmse = sqrt(rss ./ n);
+      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
+      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
+      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
+      fit.aic = n .* log(rss ./ n) + 2 * k * (n / (n - k - 1));
+      fit.bic = n .* log(rss ./ n) + 2 * k * log(n);
+      % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
     end
 
     function e = projerror(cam, xyz, uv, ray_direction)
@@ -622,7 +630,7 @@ classdef camera
       end
     end
 
-    function [newcams, rmse, aic] = optimizeCams(cams, xyz, uv, flexparams, fixparams)
+    function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams)
 
       % Convert inputs to cell arrays
       if ~iscell(cams), cams = {cams}; end
@@ -666,11 +674,18 @@ classdef camera
       % Compile results
       newcams = camera.updateCams(mbest, cams, flexparams, fixparams);
       e = cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false);
-      ssq = cellfun(@(x) sum(sum(x.^2, 2)), e);
-      n_pts = cellfun(@(x) size(x, 1), xyz);
-      rmse = sqrt(ssq ./ n_pts);
-      n_uv = cellfun(@numel, uv);
-      aic = n_uv .* log(ssq ./ n_uv) + 2 * (n_fix + n_flex);
+      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
+      n = cellfun(@(x) size(x, 1), uv);
+      fit = struct();
+      fit.rmse = sqrt(rss ./ n);
+      n = sum(n);
+      k = n_fix + sum(n_flex);
+      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
+      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
+      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
+      fit.aic = n .* log(rss ./ n) + 2 * k .* (n ./ (n - k - 1));
+      fit.bic = n .* log(rss ./ n) + 2 * k .* log(n);
+      % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
     end
 
     function cams = updateCams(m, cams, flexparams, fixparams)
