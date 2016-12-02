@@ -306,6 +306,16 @@ classdef camera
       cam.imgsz = imgsz1;
     end
 
+    function cam = idealize(cam)
+      % Make a copy
+      cam = cam;
+      % Strip distortion
+      cam.k = zeros(size(cam.k));
+      cam.p = zeros(size(cam.p));
+      cam.c = [];
+      cam.imgsz = cam.imgsz;
+    end
+
     % Camera geometry
 
     function value = get.framebox(cam)
@@ -369,7 +379,7 @@ classdef camera
       u = (0:du:cam.imgsz(1)) + 0.5;
       v = (0:du:cam.imgsz(2)) + 0.5;
       [pu pv] = meshgrid(u, v);
-      P0 = [pu(:) pv(:)]; P1 = cam.idealize(P0);
+      P0 = [pu(:) pv(:)]; P1 = camera2image(cam.idealize, cam.image2camera(P0));
       h = plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
       quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
       set(gca, 'xlim', cam.imgsz(1) * [-0.1 1.1], 'ylim', cam.imgsz(2) * [-0.1 1.1], 'ydir', 'reverse');
