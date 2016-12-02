@@ -402,9 +402,14 @@ classdef camera
       dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
     end
 
-    function [xy, infront] = world2camera(cam, xyz)
-      % Convert world to camera coordinates
-      xyz = bsxfun(@minus, xyz, cam.xyz);
+    function [xy, infront] = world2camera(cam, xyz, ray_direction)
+      if nargin < 3
+        ray_direction = false;
+      end
+      if ~ray_direction
+        % Convert world to camera coordinates
+        xyz = bsxfun(@minus, xyz, cam.xyz);
+      end
       xyz = xyz * cam.R';
       % Normalize by perspective division
       xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
@@ -413,17 +418,12 @@ classdef camera
       xy(~infront, :) = NaN;
     end
 
-    function uv = camera2image(cam, xy, distort)
-      if nargin < 3
-        distort = true;
-      end
-      if distort
-        xy = cam.distort(xy);
-      end
+    function uv = camera2image(cam, xy)
+      xy = cam.distort(xy);
       uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
     end
 
-    function [uv, infront] = project(cam, xyz)
+    function [uv, infront] = project(cam, xyz, ray_direction)
       % PROJECT  Project 3D world coordinates to 2D image coordinates.
       %
       %   uv = cam.project(xyz)
@@ -436,7 +436,10 @@ classdef camera
       %
       % See also: camera.invproject
 
-      [xy, infront] = cam.world2camera(xyz);
+      if nargin < 3
+        ray_direction = false;
+      end
+      [xy, infront] = cam.world2camera(xyz, ray_direction);
       uv = cam.camera2image(xy);
     end
 
@@ -476,7 +479,7 @@ classdef camera
 
       elseif nargin > 2 && strcmp(class(S), 'DEM')
         % DEM: Return intersection of rays with DEM
-        for i = find(is_valid)
+        for i = find(is_valid)'
           xyz(i, :) = intersectRayDEM([cam.xyz xyz(i, :)], S);
         end
       end
@@ -521,10 +524,41 @@ classdef camera
       %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
 
       [newcam, rmse, aic] = camera.optimizeCams(cam, xyz, uv, freeparams);
+      newcam = newcam{1};
     end
 
-    function e = projerror(cam, xyz, uv)
-      puv = cam.project(xyz);
+    function [newcam, rmse, aic] = optimizeR(cam, uv, uv2, angles)
+      % Enforce defaults
+      if nargin < 4
+        angles = 1:3;
+      end
+      % Convert to ray directions
+      dxyz = cam.invproject(uv);
+      % Set up error function
+      flexparams = camera.parseFreeparams({'viewdir', angles});
+      fixparams = camera.parseFreeparams({});
+      ray_direction = true;
+      ef = @(d) reshape(projerror(camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
+      % Optimize
+      [d, ssq] = LMFnlsq(ef, zeros(length(angles), 1));
+      % Compile results
+      newcam = camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
+      rmse = sqrt(ssq ./ size(uv, 1));
+      aic = numel(uv) .* log(ssq ./ numel(uv)) + 2 * length(angles);
+    end
+
+    function e = projerror(cam, xyz, uv, ray_direction)
+      if nargin < 4
+        ray_direction = false;
+      end
+      if nargin < 5
+        distort = true;
+      end
+      if size(xyz, 2) == 3
+        puv = cam.project(xyz, ray_direction);
+      elseif size(xyz, 2) == 2
+        puv = cam.camera2image(xyz, distort);
+      end
       e = puv - uv(:, 1:2);
       if size(uv, 2) == 3
         e = e .* uv(:, [3 3]);
@@ -546,19 +580,6 @@ classdef camera
   end % methods
 
   methods (Static)
-
-    function R = optimizeR(xyA, xyB)
-      ang = [0 0 0];
-      misfit = @(ang) camera.Re(ang, xyA, xyB);
-      [ang, RSS] = LMFnlsq(misfit, ang); %WORKS SUPER FAST
-      R = ang2rot(ang);
-    end
-
-    function e = Re(ang, xyA, xyB)
-      R = ang2rot(ang);
-      pxyB = hnormalise(R * homog(xyA'))';
-      e = sum((pxyB(:, 1:2) - xyB).^2, 2);
-    end
 
     function freeparams = parseFreeparams(freeparams)
       % Convert freeparams to boolean fullmodel selector

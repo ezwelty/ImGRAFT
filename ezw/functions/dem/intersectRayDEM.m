@@ -99,11 +99,11 @@ if ~isempty(cells)
     else
 
         % return NaN
-        intersect = -1;
+        intersect = NaN;
     end
 
 else
 
     % return NaN
-    intersect = -1;
+    intersect = NaN;
 end

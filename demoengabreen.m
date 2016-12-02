@@ -1,7 +1,7 @@
 %% Feature tracking example
-%   
+%
 % This is a complete example of feature tracking on Engabreen.
-% 
+%
 % # Load images & data
 % # Use GCPs to determine camera view direction and lens distortion
 %   parameters of image
@@ -17,7 +17,7 @@ close all
 
 %% Setup file locations and load images & data
 %
-% 
+%
 
 idA = 8902; idB = 8937; % image ids (/file numbers)
 
@@ -32,7 +32,8 @@ B = imread(fB);
 metaA = imfinfo(fA);tA = datenum(metaA.DateTime,'yyyy:mm:dd HH:MM:SS');
 metaB = imfinfo(fB);tB = datenum(metaB.DateTime,'yyyy:mm:dd HH:MM:SS');
 
-dem = load(fullfile(datafolder,'dem')); %load DEM
+dem_temp = load(fullfile(datafolder,'dem')); %load DEM
+dem = DEM(dem_temp.Z, dem_temp.X, dem_temp.Y);
 gcpA = load(fullfile(datafolder,'gcp8902.txt'));%load ground control points for image A
 
 
@@ -40,24 +41,19 @@ gcpA = load(fullfile(datafolder,'gcp8902.txt'));%load ground control points for 
 %
 % # Initial crude guess at camera parameters
 % # Use GCPs to optimize camera parameters
-% 
+%
 
 %calculate focal length in pixel units:
-FocalLength = 30; %mm (can also be found here: metaA.DigitalCamera.FocalLength)
-SensorSize = [22.0 14.7]; %mm: http://www.cnet.com/products/canon-eos-rebel-t3/specs/
-imgsz = size(A);
-f = imgsz([2 1]).*(FocalLength./SensorSize); 
-
-%known camera location: 
-cameralocation = [446722.0 7396671.0 770.0]; 
-
-%crude estimate of look direction.
-camA = camera(cameralocation,size(A),[200 0 0]*pi/180,f); %loooking west
+camA = camera();
+camA.xyz = [446722.0 7396671.0 770.0];
+camA.imgsz = [size(A, 2), size(A, 1)];
+camA.sensorsz = [22.0 14.7]; %mm: http://www.cnet.com/products/canon-eos-rebel-t3/specs/
+camA.fmm = 30; %mm (can also be found here: metaA.DigitalCamera.FocalLength)
+camA.viewdir = [-110 0 0]; %loooking west-ish
 
 %Use GCPs to optimize the following camera parameters:
 %view dir, focal lengths, and a simple radial distortion model
-[camA,rmse,aic] = camA.optimizecam(gcpA(:,1:3),gcpA(:,4:5),'00000111110010000000');
-fprintf('reprojectionerror = %3.1fpx  AIC:%4.0f\n',rmse,aic) 
+[camA, rmse, aic] = camA.optimize(gcpA(:, 1:3), gcpA(:, 4:5), {'viewdir', 'f', 'k', 1})
 
 %Visually compare the projection of the GCPs with the pixel coords:
 figure
@@ -77,7 +73,7 @@ title(sprintf('Projection of ground control points. RMSE = %.1fpx',rmse))
 %% Determine view direction of camera B.
 %
 % # find movement of rock features between images A and B
-% # determine camera B by pertubing viewdir of camera A. 
+% # determine camera B by pertubing viewdir of camera A.
 
 
 % First get an approximate estimate of the image shift using a single large
@@ -88,7 +84,7 @@ title(sprintf('Projection of ground control points. RMSE = %.1fpx',rmse))
 % Having multiple shift estimates will allow us to determine camera
 % rotation.
 [pu,pv] = meshgrid(200:700:4000,100:400:1000);
-pu = pu(:); pv = pv(:)+pu/10; 
+pu = pu(:); pv = pv(:)+pu/10;
 
 [du,dv,C] = templatematch(A,B,pu,pv,'templatewidth',61,'searchwidth',81,'supersample',3,'initialdu',duoffset,'initialdv',dvoffset);
 
@@ -97,29 +93,35 @@ pu = pu(:); pv = pv(:)+pu/10;
 % shifts.
 
 % find 3d coords consistent with the 2d pixel coords in points.
-xyz = camA.invproject([pu pv]);
+xyz = camA.invproject([pu pv], dem);
 % the projection of xyz has to match the shifted coords in points+dxy:
 
-[camB,rmse] = camA.optimizecam(xyz,[pu+du pv+dv],'00000111000000000000'); %optimize 3 view direction angles to determine camera B. 
-rmse
+[camB,rmse] = camA.optimize(xyz,[pu+du pv+dv],{'viewdir'}) %optimize 3 view direction angles to determine camera B.
 
-%quantify the shift between A and B in terms of an delta angle. 
-DeltaViewDirection = (camB.viewdir-camA.viewdir)*180/pi 
+not_valid = any(isnan(xyz), 2);
+uvA = [pu, pv]; uvA(not_valid, :) = [];
+uvB = [pu+du pv+dv]; uvB(not_valid, :) = [];
+[camB2,rmse] = camA.optimizeR(uvA, uvB) %optimize 3 view direction angles to determine camera B.
+
+camB.viewdir - camB2.viewdir
+camB.viewdir - camA.viewdir
+%quantify the shift between A and B in terms of an delta angle.
+DeltaViewDirection = (camB.viewdir-camA.viewdir)*180/pi
 
 
 
 %% Generate a set of points to be tracked between images
 %
 % # Generate a regular grid of candidate points in world coordinates.
-% # Cull the set of candidate points to those that are visible and glaciated 
+% # Cull the set of candidate points to those that are visible and glaciated
 %
 %
 
 % The viewshed is all the points of the dem that are visible from the
-% camera location. They may not be in the field of view of the lens. 
+% camera location. They may not be in the field of view of the lens.
 dem.visible = voxelviewshed(dem.X,dem.Y,dem.filled,camA.xyz);
 
-%Make a regular 50 m grid of points we would like to track from image A 
+%Make a regular 50 m grid of points we would like to track from image A
 [XA,YA] = meshgrid(min(dem.x):50:max(dem.x),min(dem.y):50:max(dem.y));
 ZA = interp2(dem.X,dem.Y,dem.filled,XA,YA);
 
@@ -127,14 +129,14 @@ ZA = interp2(dem.X,dem.Y,dem.filled,XA,YA);
 [uvA,~,inframe] = camA.project([XA(:) YA(:) ZA(:)]); %where would the candidate points be in image A
 
 %Insert nans where we do not want to track:
-keepers = double(dem.visible&dem.mask); %visible & glaciated dem points 
-keepers = filter2(ones(11)/(11^2),keepers); %throw away points close to the edge of visibility 
+keepers = double(dem.visible&dem.mask); %visible & glaciated dem points
+keepers = filter2(ones(11)/(11^2),keepers); %throw away points close to the edge of visibility
 keepers = interp2(dem.X,dem.Y,keepers,X(:),Y(:))>.99; %which candidate points fullfill the criteria.
 uvA(~(keepers&inframe)) = nan;
 
 %% Track points between images.
 
-% calculate where points would be in image B if no ice motion 
+% calculate where points would be in image B if no ice motion
 % ( i.e. accounting only for camera shake)
 camshake = camB.project(camA.invproject(uvA))-uvA;
 
@@ -143,13 +145,13 @@ options.pu = uvA(:,1);
 options.pv = uvA(:,2);
 options.method = 'OC';
 options.showprogress = true;
-options.searchwidth = 81; 
+options.searchwidth = 81;
 options.templatewidth = 21;
 options.supersample = 2; %supersample the input images for better subpixel estimation
 options.initialdu = camshake(:,1);
 options.initialdv = camshake(:,2);
 
-[du,dv,C,Cnoise] = templatematch(A,B,options); 
+[du,dv,C,Cnoise] = templatematch(A,B,options);
 
 uvB = uvA+[du dv];
 
@@ -185,7 +187,7 @@ title('Velocity in metres per day')
 % ----
 % The largest error in the velocities will along the view direction vector.
 % By projecting to the slope direction we strongly suppress errors arising
-% from this. 
+% from this.
 
 
 [gradX,gradY] = gradient(dem.filled,dem.X(2,2)-dem.X(1,1),dem.Y(2,2)-dem.Y(1,1));
@@ -219,4 +221,3 @@ hcb = colorbar('southoutside');
 
 plot(camA.xyz(1),camA.xyz(2),'r+')
 title('Velocity along slope direction in metres per day')
-
