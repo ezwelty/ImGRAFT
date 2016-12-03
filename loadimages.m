@@ -146,14 +146,12 @@ function images = loadimages(imglist, cam)
     if nargin > 1
       if isempty(cam.imgsz)
         imgcam = cam;
-        imgcam.imgsz = [metadata.Height metadata.Width];
-        % (principal point c defaults to image center)
-        imgcam.c = (imgcam.imgsz([2 1]) + 1) / 2;
+        imgcam.imgsz = [metadata.Width metadata.Height];
       else
-        imgcam = cam.resize([metadata.Height metadata.Width]);
+        imgcam = cam.resize([metadata.Width metadata.Height]);
       end
     else
-      imgcam = camera('imgsz', [metadata.Height metadata.Width], 'f', []);
+      imgcam = camera('imgsz', [metadata.Width metadata.Height]);
     end
     % Sensor size [mm width, mm height]
     if nargin > 1 && isempty(imgcam.sensorsz)

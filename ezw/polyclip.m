@@ -75,6 +75,13 @@ function c = polyclip(p, l)
     c_in{1} = p;
   end
   c = {c_in, c_out};
+  for i = 1:length(c)
+    for j = 1:length(c{i})
+      [x, y] = poly2cw(c{i}{j}(:, 1), c{i}{j}(:, 2));
+      c{i}{j} = [x, y];
+    end
+  end
+end
 
 % l must start and end on polygon boundary
 % p must be closed
@@ -100,6 +107,7 @@ function c = polyclip_single(p, l, ii, in)
     keep = [true ; sum(abs(diff(c2)), 2) > 0];
     c{length(c) + 1} = c2(keep, :);
   end
+end
 
   % # Assign direction to each polygon feature
   %  polygons = arcpy.UpdateCursor(diffshp)

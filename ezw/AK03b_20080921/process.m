@@ -1,28 +1,119 @@
-% AK03b_20080921
-matlab -display :0.0 -nodesktop
+%%% AK03b_20080921
+
+% matlab -display :0.0 -nodesktop
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
+root_dir = fullfile('ezw', 'AK03b_20080921');
 
-%% Initialize camera
-S = struct();
-S.xyz = [497017.2113 6776153.168 163.52];
-S.viewdir = [-22.5 -5 3];
-images = loadimages('ezw/AK03b_20080921/images/AK03b_20080621_211611.JPG', camera(S));
-cam = images(1).cam;
+%% Load images
+c = camera('xyz', [497017.2113 6776153.168 163.52], 'viewdir', [-22.5 -5 3]);
+img_files = dir(fullfile(root_dir, 'images', '*.JPG'));
+img_paths = arrayfun(@(f) fullfile(f.folder, f.name), img_files, 'UniformOutput', false);
+images = loadimages(img_paths, c);
 
-%% Calibrate anchor image
-GCP = readtable('ezw/AK03b_20080921/gcp.tsv', 'filetype', 'text', 'delimiter', '\t');
+%% Load control points
+GCP = readtable(fullfile(root_dir, 'gcp.tsv'), 'filetype', 'text', 'delimiter', '\t');
 GCP.Properties.RowNames = lower(GCP.name);
-svg = svg2struct('ezw/AK03b_20080921/images/AK03b_20080621_211611.svg');
-gcp_names = fieldnames(svg.gcp);
-gcp_uv = cell2mat(struct2cell(svg.gcp));
-gcp_xyz = GCP{lower(gcp_names), {'x_wgs84', 'y_wgs84', 'z_hae'}};
-[newcam, rmse, ~] = cam.optimize(gcp_xyz, gcp_uv, {'viewdir', 'f', 'c', 'k', [1:2]})
-images(1).cam = newcam;
+svg_files = dir(fullfile(root_dir, 'images', '*.svg'));
+svg_paths = arrayfun(@(f) fullfile(f.folder, f.name), svg_files, 'UniformOutput', false);
+svg = cellfun(@svg2struct, svg_paths, 'UniformOutput', false);
+for i = 1:length(svg_paths)
+  [folder, file, ext] = fileparts(svg_paths{i});
+  has_svg = strcmp(fullfile(folder, [file '.JPG']), {images.path});
+  images(has_svg).svg = svg{i};
+  if isfield(svg{i}, 'gcp')
+    gcp_names = fieldnames(svg{i}.gcp);
+    gcp_xyz = GCP{lower(gcp_names), {'x_wgs84', 'y_wgs84', 'z_hae'}};
+    for j = 1:length(gcp_names)
+      images(has_svg).svg.gcp.(gcp_names{j}) = [images(has_svg).svg.gcp.(gcp_names{j}) + 0.5, gcp_xyz(j, :)];
+    end
+  end
+end
 
-%% Load image & camera
-I = imread(images(1).path);
-cam = images(1).cam;
+%% Calibrate anchor images
+% (images with svg.gcp field)
+is_anchor = arrayfun(@(img) eval('isfield(img.svg, ''gcp'')'), images)';
+is_anchor_ind = find(is_anchor);
+cams = {images(is_anchor).cam};
+gcp = arrayfun(@(img) cell2mat(struct2cell(img.svg.gcp)), images(is_anchor), 'UniformOutput', false);
+uv = cellfun(@(x) x(:, 1:2), gcp, 'UniformOutput', false);
+xyz = cellfun(@(x) x(:, 3:5), gcp, 'UniformOutput', false);
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f'})
+for i = 1:length(newcams)
+  images(is_anchor_ind(i)).cam = newcams{i};
+end
+
+%% Assign images to nearest anchor
+anchor_dates = [images(is_anchor).date];
+for i = find(~is_anchor)
+  [~, i_min] = min(abs(anchor_dates - images(i).date));
+  images(i).anchor = images(is_anchor_ind(i_min)).path;
+end
+
+%% Segment anchor images
+for i = find(is_anchor)
+  % Water: image frame clipped by terminus (coastline trace)
+  c = polyclip(images(i).cam.framepoly, images(i).svg.terminus + 0.5);
+  waterpoly = c{1}{1}; % FIXME: Choose automatically
+  % Glacier: glacier - water
+  [gx, gy] = polybool('subtraction', images(i).svg.glacier(:, 1) + 0.5, images(i).svg.glacier(:, 2) + 0.5, waterpoly(:, 1), waterpoly(:, 2));
+  glacierpoly = [gx, gy];
+  % Sky: image frame clipped by horizon
+  c = polyclip(images(i).cam.framepoly, images(i).svg.horizon + 0.5);
+  skypoly = c{1}{2}; % FIXME: Choose automatically
+  % Land: image frame - (sky + glacier + water)
+  [lx, ly] = polybool('subtraction', images(i).cam.framepoly(:, 1), images(i).cam.framepoly(:, 2), {glacierpoly(:, 1), waterpoly(:, 1), skypoly(:, 1)}, {glacierpoly(:, 2), waterpoly(:, 2), skypoly(:, 2)});
+  landpolys = cellfun(@(x, y) [x y], lx, ly, 'UniformOutput', false);
+  % Save
+  images(i).glacierpolys = {glacierpoly};
+  images(i).landpolys = landpolys;
+  % % Plot
+  % figure()
+  % imshow(imread(images(i).path));
+  % patch(skypoly(:, 1), skypoly(:, 2), 1, 'Facecolor', 'b');
+  % patch(glacierpoly(:, 1), glacierpoly(:, 2), 1, 'Facecolor', 'w');
+  % patch(waterpoly(:, 1), waterpoly(:, 2), 1, 'Facecolor', 'b');
+  % for j = 1:length(landpolys)
+  %   patch(landpolys{j}(:, 1), landpolys{j}(:, 2), 1, 'Facecolor', 'y');
+  % end
+  % alpha(0.5);
+end
+
+%% Calibrate images from assigned anchors
+image_paths = {images.path};
+for i = find(~is_anchor)
+  img = imread(images(i).path);
+  anchor_i = find(strcmp(images(i).anchor, image_paths));
+  anchor_img = imread(images(anchor_i).path);
+  % Generate grid of points in land polygons
+  gdu = 100; gdv = 100;
+  mpu = []; mpv = []; mdu = []; mdv = [];
+  for i_poly = 1:length(landpolys)
+    u = 0:gdu:range(landpolys{i_poly}(:, 1)) + min(landpolys{i_poly}(:, 1));
+    v = 0:gdv:range(landpolys{i_poly}(:, 2)) + min(landpolys{i_poly}(:, 2));
+    [pu pv] = meshgrid(u, v);
+    [in on] = inpolygon(pu, pv, landpolys{i_poly}(:, 1), landpolys{i_poly}(:, 2));
+    pu = pu(in & ~on); pv = pv(in & ~on);
+    [du, dv] = templatematch(Ia, Ib, pu, pv, 'templatewidth', gdu / 2, 'searchwidth', gdu);
+    mpu = [mpu ; pu]; mpv = [mpv ; pv]; mdu = [mdu ; du]; mdv = [mdv ; dv];
+  end
+  figure
+  imshow(Ia / 1.5); hold on;
+  s = 10; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
+  % Idealize (undistort) image coordinates
+  nonans = ~(isnan(mdu) | isnan(mdv));
+  mpu = mpu(nonans); mpv = mpv(nonans);
+  mdu = mdu(nonans); mdv = mdv(nonans);
+  A = cam.normalize([mpu mpv]);
+  B = cam.normalize([mpu + mdu, mpv + mdv]);
+  [F, inliersF] = ransacfitfundmatrix(A', B', 0.00000001); % tricky to set threshold (re-express in pixels?)
+  [H, inliersH] = ransacfithomography(A', B', 0.000001); % tricky to set threshold (re-express in pixels?)
+  figure
+  imshow(Ia / 1.5); hold on;
+  s = 10; quiver(mpu(inliers), mpv(inliers), s * mdu(inliers), s * mdv(inliers), 0, 'y')
+
+end
+
 
 %% Load DEM
 [Z, ~, bbox] = geotiffread('/volumes/science/data/columbia/_new/ifsar/merged_projected_clipped.tif');
