@@ -81,38 +81,142 @@ end
 
 %% Calibrate images from assigned anchors
 image_paths = {images.path};
+rmse = [];
 for i = find(~is_anchor)
-  img = imread(images(i).path);
-  anchor_i = find(strcmp(images(i).anchor, image_paths));
-  anchor_img = imread(images(anchor_i).path);
+  i0 = find(strcmp(images(i).anchor, image_paths));
+  I0 = imread(images(i0).path);
+  I = imread(images(i).path);
   % Generate grid of points in land polygons
+  % FIXME: Pre-process anchor images first?
   gdu = 100; gdv = 100;
   mpu = []; mpv = []; mdu = []; mdv = [];
-  for i_poly = 1:length(landpolys)
-    u = 0:gdu:range(landpolys{i_poly}(:, 1)) + min(landpolys{i_poly}(:, 1));
-    v = 0:gdv:range(landpolys{i_poly}(:, 2)) + min(landpolys{i_poly}(:, 2));
+  for i_poly = 1:length(images(i0).landpolys)
+    u = min(images(i0).landpolys{i_poly}(:, 1)):gdu:max(images(i0).landpolys{i_poly}(:, 1));
+    v = min(images(i0).landpolys{i_poly}(:, 2)):gdv:max(images(i0).landpolys{i_poly}(:, 2));
     [pu pv] = meshgrid(u, v);
+    % FIXME: Remove points too close to edge?
     [in on] = inpolygon(pu, pv, landpolys{i_poly}(:, 1), landpolys{i_poly}(:, 2));
     pu = pu(in & ~on); pv = pv(in & ~on);
-    [du, dv] = templatematch(Ia, Ib, pu, pv, 'templatewidth', gdu / 2, 'searchwidth', gdu);
+    [du, dv] = templatematch(I0, I, pu, pv, 'templatewidth', gdu / 2, 'searchwidth', gdu);
     mpu = [mpu ; pu]; mpv = [mpv ; pv]; mdu = [mdu ; du]; mdv = [mdv ; dv];
   end
-  figure
-  imshow(Ia / 1.5); hold on;
-  s = 10; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
-  % Idealize (undistort) image coordinates
+  % % Plot matches
+  % figure
+  % imshow(I0 / 1.5); hold on;
+  % s = 10; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
+  % Filter matches with RANSAC Fundamental Matrix
   nonans = ~(isnan(mdu) | isnan(mdv));
   mpu = mpu(nonans); mpv = mpv(nonans);
   mdu = mdu(nonans); mdv = mdv(nonans);
-  A = cam.normalize([mpu mpv]);
-  B = cam.normalize([mpu + mdu, mpv + mdv]);
-  [F, inliersF] = ransacfitfundmatrix(A', B', 0.00000001); % tricky to set threshold (re-express in pixels?)
-  [H, inliersH] = ransacfithomography(A', B', 0.000001); % tricky to set threshold (re-express in pixels?)
-  figure
-  imshow(Ia / 1.5); hold on;
-  s = 10; quiver(mpu(inliers), mpv(inliers), s * mdu(inliers), s * mdv(inliers), 0, 'y')
-
+  A = images(i0).cam.image2camera([mpu, mpv]);
+  B = images(i0).cam.image2camera([mpu + mdu, mpv + mdv]);
+  [F, inliersF] = ransacfitfundmatrix(A', B', 0.00000005); % TODO: tricky to set threshold (re-express in pixels?)
+  % [H, inliersH] = ransacfithomography(A', B', 0.00000005); % TODO: tricky to set threshold (re-express in pixels?)
+  % % Plot filtered matches
+  % figure
+  % imshow(I0 / 1.5); hold on;
+  % s = 10; quiver(mpu(inliersF), mpv(inliersF), s * mdu(inliersF), s * mdv(inliersF), 0, 'y')
+  % % s = 10; quiver(mpu(inliersH), mpv(inliersH), s * mdu(inliersH), s * mdv(inliersH), 0, 'y')
+  % Orient image
+  [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersF), mpv(inliersF)], [mpu(inliersF) + mdu(inliersF), mpv(inliersF) + mdv(inliersF)]);
+  % [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersH), mpv(inliersH)], [mpu(inliersH) + mdu(inliersH), mpv(inliersH) + mdv(inliersH)])
+  rmse(end + 1) = fit.rmse;
+  images(i).cam = newcam;
+  % Transform glacier polygons
+  images(i).glacierpolys = {};
+  for i_poly = 1:length(images(i0).glacierpolys)
+    images(i).glacierpolys{i_poly} = images(i).cam.project(images(i0).cam.invproject(images(i0).glacierpolys{i_poly}), true);
+  end
 end
+
+%% Glacier DEM
+[Z, ~, bbox] = geotiffread('/volumes/science/data/columbia/dem/2004 Aerometric/20080811_2m.tif');
+gdem = DEM(double(Z), bbox(:, 1), flip(bbox(:, 2)));
+viewbox = images(1).cam.viewbox(8 * 1e3);
+gcdem = gdem.crop(viewbox(:, 1), viewbox(:, 2), [0 Inf]);
+gsmdem = gcdem.resize(0.25);
+% Draw circle around camera
+[x0, y0] = gsmdem.xy2ind(images(1).cam.xyz);
+r = round(100 / gsmdem.dx);
+[xc, yc] = getmidpointcircle(x0, y0, r);
+% Fill circle
+ind = [];
+y = unique(yc); yin = ~(y < 1 | y > gsmdem.ny);
+for yi = reshape(y(yin), 1, [])
+  xb = xc(yc == yi);
+  xi = max(min(xb), 1):min(max(xb), gsmdem.nx);
+  ind((end + 1):(end + length(xi))) = sub2ind([gsmdem.ny, gsmdem.nx], repmat(yi, 1, length(xi)), xi);
+end
+% Apply to DEM
+gsmdem.Z(ind) = NaN;
+
+%% Glacier points
+gxyz = images(1).cam.invproject(images(1).glacierpolys{1}, gsmdem);
+gxyz(any(isnan(gxyz), 2), :) = [];
+gdx = 500; gdy = 500;
+x = min(gxyz(:, 1)):gdx:max(gxyz(:, 1));
+y = min(gxyz(:, 2)):gdy:max(gxyz(:, 2));
+[gx gy] = meshgrid(x, y);
+% FIXME: Remove points too close to edge?
+[in on] = inpolygon(gx, gy, gxyz(:, 1), gxyz(:, 2));
+gx = gx(in & ~on); gy = gy(in & ~on);
+gpts = cell2mat(cellfun(@gsmdem.sample, num2cell([gx gy], 2), 'UniformOutput', false));
+% gsmdem.plot(2); hold on; plot(gxyz(:, 1), gxyz(:, 2), 'y-'); plot(gx, gy, 'r*');
+
+visible = voxelviewshed(gsmdem.X, gsmdem.Y, gsmdem.Z, images(1).cam.xyz);
+ind = gsmdem.xy2ind(gpts);
+v = visible(ind);
+
+guv = images(1).cam.project(gpts);
+% imshow(imread(images(1).path) / 1.5); hold on; plot(images(1).glacierpolys{1}(:, 1), images(1).glacierpolys{1}(:, 2), 'y-'); plot(guv(:, 1), guv(:, 2), 'r*');
+d = images(1).cam.invproject(guv);
+% gpts2 = images(1).cam.invproject(guv(1, :), gsmdem)
+i = 2;
+gpts2 = gsmdem.sample(images(1).cam.xyz, d(i, :), false, gpts(i, :), 100)
+gpts2 = gsmdem.sample(images(1).cam.xyz, d(i, :), false)
+bsxfun(@minus, gpts2, gpts(i, :))
+plot(gpts(i, 1), gpts(i, 2), 'ko'); hold on;
+plot(gpts2(:, 1), gpts2(:, 2), 'r*');
+
+gsmdem.plot(3); hold on
+plot3(images(1).cam.xyz(:, 1), images(1).cam.xyz(:, 2), images(1).cam.xyz(:, 3), 'k*');
+quiver3(images(1).cam.xyz(:, 1), images(1).cam.xyz(:, 2), images(1).cam.xyz(:, 3), d(i, 1), d(i, 2), d(i, 3), 7e3, 'g');
+plot3(gpts(i, 1), gpts(i, 2), gpts(i, 3), 'g*');
+plot3(gpts2(i, 1), gpts2(i, 2), gpts2(i, 3), 'r*');
+
+
+dem = DEM(peaks(25));
+dem.Z(1:15, 1:10) = NaN;
+o = [7 10 3];
+d = [1 0 -0.25];
+X = dem.intersectRay([o d])
+figure
+dem.plot(3); hold on
+plot3(o(:, 1), o(:, 2), o(:, 3), 'k*');
+quiver3(o(:, 1), o(:, 2), o(:, 3), d(:, 1), d(:, 2), d(:, 3), 10, 'g');
+plot3(X(:, 1), X(:, 2), X(:, 3), 'r*');
+
+%% Velocities
+for i = 2:length(images);
+  i0 = i - 1;
+  I0 = imread(images(i0).path);
+  I = imread(images(i).path);
+  p0 = images(i0).cam.project(gpts);
+  p = images(i).cam.project(gpts);
+  imshow(I0 / 1.5); hold on; plot(p(:, 1), p(:, 2), 'y*');
+  [du, dv] = templatematch(I0, I, p0(:, 1), p0(:, 2), 'templatewidth', 50, 'searchwidth', 200,'initialdu', p(:, 1) - p0(:, 1), 'initialdv', p(:, 2) - p0(:, 2), 'supersample', 1);
+  pXw = images(i).cam.invproject(p0 + [du, dv], gsmdem);
+  figure
+  imshow(I0 / 1.5); hold on;
+  s = 10; quiver(p0(:, 1), p0(:, 2), s * du, s * dv, 0, 'y')
+  figure
+  gsmdem.plot(2); hold on;
+  s = 1; quiver(gpts(:, 1), gpts(:, 2), s * (pXw(:, 1) - gpts(:, 1)), s * (pXw(:, 2) - gpts(:, 2)), 0, 'y')
+end
+
+
+
+
 
 
 %% Load DEM

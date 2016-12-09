@@ -343,8 +343,7 @@ classdef camera
         [flip(u) repmat(cam.imgsz(2), length(u), 1)];
         [repmat(0, length(v), 1) flip(v)]
       ];
-      edge_xyz = cam.invproject(edge_uv);
-      directions = bsxfun(@minus, edge_xyz, cam.xyz);
+      directions = cam.invproject(edge_uv);
       if nargin < 2
         radius = 1;
       end
@@ -490,7 +489,8 @@ classdef camera
       elseif nargin > 2 && strcmp(class(S), 'DEM')
         % DEM: Return intersection of rays with DEM
         for i = find(is_valid)'
-          xyz(i, :) = intersectRayDEM([cam.xyz xyz(i, :)], S);
+          % xyz(i, :) = intersectRayDEM([cam.xyz xyz(i, :)], S);
+          xyz(i, :) = S.sample(cam.xyz, xyz(i, :));
         end
       end
     end

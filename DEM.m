@@ -45,6 +45,7 @@ classdef DEM < handle
   properties (SetAccess = private, Hidden = true, GetObservable)
     x, y
     X, Y
+    tin
   end
 
   methods
@@ -77,7 +78,7 @@ classdef DEM < handle
       if nargin == 1
         dem.Z = DEM.parseZ(varargin{1});
         dem.xlim = [0 size(dem.Z, 2)];
-        dem.ylim = [0 size(dem.Z, 1)];
+        dem.ylim = [size(dem.Z, 1) 0];
         dem = dem.updateXYZ;
       end
       % (Z, xlim, ylim)
@@ -95,6 +96,7 @@ classdef DEM < handle
       addlistener(dem, 'y', 'PreGet', @dem.PreGetProperty);
       addlistener(dem, 'X', 'PreGet', @dem.PreGetProperty);
       addlistener(dem, 'Y', 'PreGet', @dem.PreGetProperty);
+      addlistener(dem, 'tin', 'PreGet', @dem.PreGetProperty);
     end
 
     function PreGetProperty(dem, property, varargin)
@@ -268,7 +270,7 @@ classdef DEM < handle
       colormap gray
     end
 
-    function ind = xy2ind(dem, xy)
+    function [xi, yi] = xy2ind(dem, xy)
       xi = ceil((xy(:, 1) - dem.xlim(1)) ./ diff(dem.xlim) * dem.nx);
       xi(xy(:, 1) == dem.xlim(1)) = 1;
       yi = ceil((xy(:, 2) - dem.ylim(1)) ./ diff(dem.ylim) * dem.ny);
@@ -276,11 +278,18 @@ classdef DEM < handle
       nans = xi < 1 | xi > dem.nx | yi < 1 | yi > dem.ny;
       xi(nans) = NaN;
       yi(nans) = NaN;
-      ind = sub2ind([dem.ny dem.nx], yi, xi);
+      if nargout == 1
+        xi = sub2ind([dem.ny dem.nx], yi, xi);
+      end
     end
 
-    function xyz = ind2xyz(dem, ind)
-      [yi, xi] = ind2sub([dem.ny dem.nx], ind);
+    function xyz = ind2xyz(dem, xi, yi)
+      if nargin == 2
+        ind = xi;
+        [yi, xi] = ind2sub([dem.ny dem.nx], ind);
+      else
+        ind = sub2ind([dem.ny dem.nx], yi, xi);
+      end
       xyz = [dem.x(xi)' dem.y(yi)' dem.Z(ind)];
     end
 
@@ -341,6 +350,199 @@ classdef DEM < handle
           voxy = max(voxy, interp1q(xx, yy, voxx));
       end
       vis = reshape(vis, [dem.ny dem.nx]);
+    end
+
+    function [zmin, zmax] = tingrids(dem)
+      zmin = ordfilt2(dem.Z, 1, ones(2,2));
+      zmax = ordfilt2(dem.Z, 4, ones(2,2));
+      % Strip padded row and column
+      zmin = zmin(1:(end - 1), 1:(end - 1));
+      zmax = zmax(1:(end - 1), 1:(end - 1));
+    end
+
+    function X = sample(dem, origin, direction, first, xy0, r0)
+
+      %dem.tin;
+
+      if nargin < 4 || isempty(first)
+        first = true;
+      end
+
+      if nargin < 3
+        % sample at origin
+        [xi, yi] = dem.tin.Dzmin.xy2ind(origin);
+        dx = origin(1) - (dem.tin.Dzmin.xlim(1) + (xi - 1) * sign(diff(dem.tin.Dzmin.xlim)) * dem.dx);
+        dy = origin(2) - (dem.tin.Dzmin.ylim(1) + yi * sign(diff(dem.tin.Dzmin.ylim)) * dem.dy);
+        if dy >= dx * (dem.tin.Dzmin.dy / dem.tin.Dzmin.dx)
+          % upper triangle
+          ind = sub2ind(size(dem.Z), [yi + 1; yi; yi], [xi; xi; xi + 1]);
+        else
+          % lower triangle
+          ind = sub2ind(size(dem.Z), [yi; yi + 1; yi + 1], [xi + 1; xi + 1; xi]);
+        end
+        tri = [dem.X(ind), dem.Y(ind), dem.Z(ind)];
+        u = tri(1, :) - tri(3, :);
+        v = tri(2, :) - tri(3, :);
+        n = cross(u, v);
+        d = n(1) * tri(1, 1) + n(2) * tri(1, 2) + n(3) * tri(1, 3);
+        z = (d - (n(1) * origin(1) + n(2) * origin(2))) / n(3);
+        X = [origin(1), origin(2), z];
+        return
+      end
+
+      % TODO: compare to intersectLineMesh3d in mesh3d | intersectLineTriangle3d, intersectRayPolygon3d in gemo3d
+      % TODO: vectorize for shared origin (as when emanating from camera)
+      % TODO: Pre-compute TIN and cache in DEM object.
+      % TODO: Pre-compute all triangles?
+      % TODO: Split DEM into multiple boxes and test each box in turn? (quadtree?)
+
+      % Test for ray - box intersection
+      if nargin < 6
+        [tmin, tmax] = intersectRayBox([origin direction], [dem.tin.min dem.tin.max]);
+        imin = [1 1];
+        imax = [dem.tin.nx dem.tin.ny];
+      else
+        % Apply search radius (if specified)
+        % Snap search radius to grid cell boundaries
+        imin = floor((xy0(1:2) - r0 - dem.tin.min(1:2)) ./ [dem.tin.dx, dem.tin.dy]);
+        imax = ceil((xy0(1:2) + r0 - dem.tin.min(1:2)) ./ [dem.tin.dx, dem.tin.dy]);
+        smin = dem.tin.min(1:2) + imin .* [dem.tin.dx, dem.tin.dy];
+        smax = dem.tin.min(1:2) + imax .* [dem.tin.dx, dem.tin.dy];
+        % Intersect with outer grid boundaries
+        smin = max([dem.tin.min(1:2) ; smin]);
+        smax = min([dem.tin.max(1:2) ; smax]);
+        [tmin, tmax] = intersectRayBox([origin direction], [smin dem.tin.min(3) smax dem.tin.max(3)]);
+        % imin = round((smin - dem.tin.min(1:2)) ./ [dem.tin.dx, dem.tin.dy]);
+        % imax = round((smax - dem.tin.min(1:2)) ./ [dem.tin.dx, dem.tin.dy]);
+      end
+
+      % Traverse grid (2D)
+      X = [];
+      if ~isempty(tmin)
+
+        % Compute endpoints of ray within grid
+        start = origin + tmin * direction;
+        stop = origin + tmax * direction;
+
+        % Find starting voxel coordinates
+        x = ceil((start(1) - dem.tin.min(1)) / dem.tin.dx);
+        y = ceil((start(2) - dem.tin.min(2)) / dem.tin.dy);
+        % Snap to 1 (from 0)
+        if x < 1
+          x = 1;
+        end
+        if y < 1
+          y = 1;
+        end
+        % Snap to nx, ny (from above)
+        % (Necessary for rounding errors)
+        if x == dem.tin.nx + 1
+          x = dem.tin.nx;
+        end
+        if y == dem.tin.ny + 1
+          y = dem.tin.ny;
+        end
+
+        % Set x,y increments based on ray slope
+        if direction(1) >= 0
+          % Increasing x
+          tCellX = x / dem.tin.nx;
+          stepX = 1;
+        else
+          % Decreasing x
+          tCellX = (x - 1) / dem.tin.nx;
+          stepX = -1;
+        end
+        if direction(2) >= 0
+          % Increasing y
+          tCellY = y / dem.tin.ny;
+          stepY = 1;
+        else
+          % Decreasing y
+          tCellY = (y-1) / dem.tin.ny;
+          stepY = -1;
+        end
+
+        % TODO: ?
+        boxSize = dem.tin.max - dem.tin.min;
+        cellMaxX = dem.tin.min(1) + tCellX * boxSize(1)
+        cellMaxY = dem.tin.min(2) + tCellY * boxSize(2)
+
+        % Compute values of t at which ray crosses vertical, horizontal voxel boundaries
+        tMaxX = tmin + (cellMaxX - start(1)) / direction(1)
+        tMaxY = tmin + (cellMaxY - start(2)) / direction(2)
+
+        % Width and height of voxel in t
+        tDeltaX = dem.tin.dx / abs(direction(1))
+        tDeltaY = dem.tin.dy / abs(direction(2))
+
+        % Find ending voxel coordinates
+        mx = ceil((stop(1) - dem.tin.min(1)) / dem.tin.dx);
+        my = ceil((stop(2) - dem.tin.min(2)) / dem.tin.dy);
+        % TODO: Snap to grid boundaries?
+        % (e.g. 0 -> 1)
+
+        % Return list of traversed voxels
+        %voxels = [];
+        z_in = start(3);
+        while (x <= dem.tin.nx) && (x >= 1) && (y <= dem.tin.ny) && (y >= 1)
+
+          % TODO: Check if origin is below surface
+
+          % Check if within current voxel (in Z)
+          % either entered voxel at tMaxX or tMaxY
+          % if tMaxX: x != voxels(end, 1)
+          % if tMaxY: y != voxels(end, 2)
+
+          if tMaxX < tMaxY
+            z_out = start(3) + tMaxX * direction(3);
+          else
+            z_out = start(3) + tMaxY * direction(3);
+          end
+
+          % Test for intersection of both possible triangles
+          % Convert to upper-left matrix indices (flip y)
+          % TODO: avoidable?
+          yi = dem.tin.ny - y + 1;
+          if ~(isnan(dem.tin.zmax(yi, x)) || isnan(dem.tin.zmax(yi, x))) && ~(z_in > dem.tin.zmax(yi, x) && z_out > dem.tin.zmax(yi, x) || z_in < dem.tin.zmin(yi, x) && z_out < dem.tin.zmin(yi, x))
+            sqi = sub2ind(size(dem.Z), [yi + 1; yi; yi; yi + 1], [x; x; x + 1; x + 1]);
+            square = [dem.X(sqi), dem.Y(sqi), dem.Z(sqi)];
+            tri1 = square([1 2 3], :);
+            tri2 = square([3 4 1], :);
+            [intersection, ~, ~, t] = rayTriangleIntersection(origin, direction, tri1(1, :), tri1(2, :), tri1(3, :));
+            if ~intersection
+              [intersection, ~, ~, t] = rayTriangleIntersection(origin, direction, tri2(1, :), tri2(2, :), tri2(3, :));
+            end
+            if intersection
+              X(end + 1, :) = origin + t * direction;
+              if first
+                break
+              end
+            end
+          end
+
+          if x == mx && y == my
+            % X = NaN;
+            % voxels(end + 1, :) = [x y];
+            break
+          end
+
+          % return voxels
+          % voxels(end + 1, :) = [x y];
+
+          if tMaxX < tMaxY
+            tMaxX = tMaxX + tDeltaX;
+            x = x + stepX;
+          else
+            tMaxY = tMaxY + tDeltaY;
+            y = y + stepY;
+          end
+          z_in = z_out;
+        end
+      end
+      if isempty(X)
+        X = NaN;
+      end
     end
 
   end % methods
@@ -468,6 +670,29 @@ classdef DEM < handle
     function dem = updateZ(dem)
       dem.min(3) = min(min(dem.Z));
       dem.max(3) = max(max(dem.Z));
+    end
+
+    function dem = compute_tin(dem)
+
+      % Prepare TIN grids
+      [zming, zmaxg] = dem.tingrids();
+      xlim = dem.xlim + [1, -1] * (dem.dx / 2) * sign(diff(dem.xlim));
+      ylim = dem.ylim + [1, -1] * (dem.dy / 2) * sign(diff(dem.ylim));
+      zmin = DEM(zming, xlim, ylim);
+      zmax = DEM(zmaxg, xlim, ylim);
+      tin = struct();
+      tin.zmin = zming;
+      tin.zmax = zmaxg;
+      tin.nx = size(tin.zmin, 2);
+      tin.ny = size(tin.zmin, 1);
+      tin.dx = zmin.dx;
+      tin.dy = zmin.dy;
+      tin.min = [dem.min(1:2) + [dem.dx / 2, dem.dy / 2], dem.min(3)];
+      tin.max = [dem.max(1:2) - [dem.dx / 2, dem.dy / 2], dem.max(3)];
+      tin.Dzmin = zmin;
+      tin.Dzmax = zmax;
+      % Store
+      dem.tin = tin;
     end
 
   end % private methods
