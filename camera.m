@@ -411,11 +411,11 @@ classdef camera
       dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
     end
 
-    function [xy, infront] = world2camera(cam, xyz, ray_direction)
+    function [xy, infront] = world2camera(cam, xyz, ray_directions)
       if nargin < 3
-        ray_direction = false;
+        ray_directions = false;
       end
-      if ~ray_direction
+      if ~ray_directions
         % Convert world to camera coordinates
         xyz = bsxfun(@minus, xyz, cam.xyz);
       end
@@ -432,7 +432,7 @@ classdef camera
       uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
     end
 
-    function [uv, infront] = project(cam, xyz, ray_direction)
+    function [uv, infront] = project(cam, xyz, ray_directions)
       % PROJECT  Project 3D world coordinates to 2D image coordinates.
       %
       %   uv = cam.project(xyz)
@@ -446,9 +446,9 @@ classdef camera
       % See also: camera.invproject
 
       if nargin < 3
-        ray_direction = false;
+        ray_directions = false;
       end
-      [xy, infront] = cam.world2camera(xyz, ray_direction);
+      [xy, infront] = cam.world2camera(xyz, ray_directions);
       uv = cam.camera2image(xy);
     end
 
@@ -565,35 +565,40 @@ classdef camera
       % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
     end
 
-    function e = projerror(cam, xyz, uv, ray_direction)
+    function e = projerror(cam, xyz, uv, ray_directions, lxyz, luv)
       if nargin < 4
-        ray_direction = false;
+        ray_directions = false;
       end
-      if nargin < 5
-        distort = true;
+      e = [];
+      if ~isempty(xyz) && ~isempty(uv)
+        if size(xyz, 2) == 3
+          puv = cam.project(xyz, ray_directions);
+        elseif size(xyz, 2) == 2
+          puv = cam.camera2image(xyz);
+        end
+        e = puv - uv(:, 1:2);
+        if size(uv, 2) == 3
+          e = e .* uv(:, [3 3]);
+        end
       end
-      if size(xyz, 2) == 3
-        puv = cam.project(xyz, ray_direction);
-      elseif size(xyz, 2) == 2
-        puv = cam.camera2image(xyz, distort);
-      end
-      e = puv - uv(:, 1:2);
-      if size(uv, 2) == 3
-        e = e .* uv(:, [3 3]);
+      if nargin >= 6 && ~isempty(lxyz) && ~isempty(luv)
+        pluv = cam.project(lxyz);
+        pos = polylinePoint(pluv, projPointOnPolyline(luv, pluv));
+        % e = [sqrt(sum(e.^2, 2)); distancePointPolyline(luv, pluv)];
+        e = [e ; pos - luv];
       end
     end
 
-    % Sky: Horizon detection (works great!)
-    % function X = horizon(cam, dem, ddeg)
-    %   if nargin < 3
-    %     ddeg = 1;
-    %   end
-    %   viewedges = cam.viewpyramid();
-    %   dxy = bsxfun(@minus, viewedges(1:(end - 1), 1:2), viewedges(end, 1:2));
-    %   angles = atan2d(dxy(:, 2), dxy(:, 1));
-    %   ray_angles = [min(angles):ddeg:max(angles)]';
-    %   X = dem.horizon(cam.xyz, ray_angles);
-    % end
+    function [X, edge] = horizon(cam, dem, ddeg)
+      if nargin < 3
+        ddeg = 1;
+      end
+      viewedges = cam.viewpyramid();
+      dxy = bsxfun(@minus, viewedges(1:(end - 1), 1:2), viewedges(end, 1:2));
+      angles = atan2d(dxy(:, 2), dxy(:, 1));
+      ray_angles = [min(angles):ddeg:max(angles)]';
+      [X, edge] = dem.horizon(cam.xyz, ray_angles);
+    end
 
   end % methods
 
@@ -630,19 +635,27 @@ classdef camera
       end
     end
 
-    function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams)
+    function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams, lxyz, luv)
+
+      if nargin < 7
+        lxyz = [];
+        luv = [];
+      end
 
       % Convert inputs to cell arrays
       if ~iscell(cams), cams = {cams}; end
       if ~iscell(xyz), xyz = {xyz}; end
       if ~iscell(uv), uv = {uv}; end
-      if ~iscell(flexparams) || ~iscell(flexparams{1}), flexparams = {flexparams}; end
+      if ~iscell(lxyz), lxyz = {lxyz}; end
+      if ~iscell(luv), luv = {luv}; end
       % Expand inputs
       n_cams = length(cams);
       if ~rem(n_cams, length(xyz)), xyz = repmat(xyz, 1, n_cams / length(xyz)); end
       if ~rem(n_cams, length(uv)), uv = repmat(uv, 1, n_cams / length(uv)); end
+      if ~rem(n_cams, length(lxyz)), lxyz = repmat(lxyz, 1, n_cams / length(lxyz)); end
+      if ~rem(n_cams, length(luv)), luv = repmat(luv, 1, n_cams / length(luv)); end
       if ~rem(n_cams, length(flexparams)), flexparams = repmat(flexparams, 1, n_cams / length(flexparams)); end
-      if any(n_cams ~= [length(xyz), length(uv), length(flexparams)])
+      if any(n_cams ~= [length(xyz), length(uv), length(flexparams), length(lxyz), length(luv)])
         error('Input arrays cannot be coerced to equal length')
       end
       % Enforce defaults
@@ -667,15 +680,15 @@ classdef camera
       n_fix = sum(fixparams);
 
       % Optimize
-      ef = @(m) reshape(cell2mat(cellfun(@projerror, camera.updateCams(m, cams, flexparams, fixparams), xyz, uv, 'UniformOutput', false)), [], 1);
+      ef = @(m) reshape(cell2mat(cellfun(@projerror, camera.updateCams(m, cams, flexparams, fixparams), xyz, uv, repmat({false}, length(cams), 1), lxyz, luv, 'UniformOutput', false)), [], 1);
       m0 = zeros(n_fix + sum(n_flex), 1);
       mbest = LMFnlsq(ef, m0);
 
       % Compile results
       newcams = camera.updateCams(mbest, cams, flexparams, fixparams);
-      e = cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false);
+      e = cellfun(@projerror, newcams, xyz, uv, repmat({false}, length(cams), 1), lxyz, luv, 'UniformOutput', false);
       rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
-      n = cellfun(@(x) size(x, 1), uv);
+      n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
       fit = struct();
       fit.rmse = sqrt(rss ./ n);
       n = sum(n);
