@@ -1,6 +1,6 @@
 %%% AK03b_20080921
 
-% matlab -display :0.0 -nodesktop
+/applications/matlab_r2016b.app/bin/matlab -display :0.0 -nodesktop
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
 root_dir = fullfile('ezw', 'AK03b_20080921');
