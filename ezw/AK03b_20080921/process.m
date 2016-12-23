@@ -130,12 +130,27 @@ for i = find(~is_anchor)
 end
 
 %% Glacier DEM
-[Z, ~, bbox] = geotiffread('/volumes/science/data/columbia/dem/2004 Aerometric/20080811_2m.tif');
+[Z, ~, bbox] = geotiffread('/volumes/science-b/data/columbia/dem/2004 Aerometric/20080811_2m.tif');
 gdem = DEM(double(Z), bbox(:, 1), flip(bbox(:, 2)));
 viewbox = images(1).cam.viewbox(8 * 1e3);
 gcdem = gdem.crop(viewbox(:, 1), viewbox(:, 2), [0 Inf]);
 gsmdem = gcdem.resize(0.25);
-% Draw circle around camera
+%% Crevasse-filling
+% per Messerli & Grinsted 2015
+wm = 300; % m
+w = 2 .* round((wm / gsmdem.dx + 1) / 2) - 1; % nearest odd integer
+Zg = imgaussfilt(gsmdem.Z, 6, 'FilterSize', w, 'Padding', 'replicate', 'FilterDomain', 'spatial');
+disk = fspecial('disk', w);
+a = nanstd(gsmdem.Z(:) - Zg(:));
+Zd = imfilter(exp((gsmdem.Z - Zg) ./ a), disk, 'replicate');
+Zf = a * log(Zd) + Zg;
+gsmdem.Z = Zf;
+% gsmdemf = DEM(gsmdem.Z, gsmdem.xlim, gsmdem.ylim);
+% gsmdemf.Z = Zf;
+% plot(gsmdem.Z(:, 600), 'k--'); hold on;
+% plot(Zg(:, 600), 'r-');
+% plot(Zf(:, 600), 'b-');
+%% Draw circle around camera
 [x0, y0] = gsmdem.xy2ind(images(1).cam.xyz);
 r = round(100 / gsmdem.dx);
 [xc, yc] = getmidpointcircle(x0, y0, r);
@@ -149,71 +164,104 @@ for yi = reshape(y(yin), 1, [])
 end
 % Apply to DEM
 gsmdem.Z(ind) = NaN;
+% gsmdem.plot(2)
 
 %% Glacier points
-gxyz = images(1).cam.invproject(images(1).glacierpolys{1}, gsmdem);
-gxyz(any(isnan(gxyz), 2), :) = [];
-gdx = 500; gdy = 500;
-x = min(gxyz(:, 1)):gdx:max(gxyz(:, 1));
-y = min(gxyz(:, 2)):gdy:max(gxyz(:, 2));
+% gxyz = images(1).cam.invproject(images(1).glacierpolys{1}, gsmdem);
+% gxyz(any(isnan(gxyz), 2), :) = [];
+% gdx = 500; gdy = 500;
+% x = min(gxyz(:, 1)):gdx:max(gxyz(:, 1));
+% y = min(gxyz(:, 2)):gdy:max(gxyz(:, 2));
+% [gx gy] = meshgrid(x, y);
+% % FIXME: Remove points too close to edge?
+% [in on] = inpolygon(gx, gy, gxyz(:, 1), gxyz(:, 2));
+% gx = gx(in & ~on); gy = gy(in & ~on);
+% gpts = cell2mat(cellfun(@gsmdem.sample, num2cell([gx gy], 2), 'UniformOutput', false));
+% % gsmdem.plot(2); hold on; plot(gxyz(:, 1), gxyz(:, 2), 'y-'); plot(gx, gy, 'r*');
+
+%% Glacier points (take 2)
+% image 10
+gpolyi = [1786 778; 3710 700; 3754 1724; 1861 1736; 1786 778];
+gpolyw = images(10).cam.invproject(gpolyi, gsmdem);
+% gsmdem.plot(2); hold on; plot(gpolyw(:, 1), gpolyw(:, 2));
+gdx = 100; gdy = 100;
+x = min(gpolyw(:, 1)):gdx:max(gpolyw(:, 1));
+y = min(gpolyw(:, 2)):gdy:max(gpolyw(:, 2));
 [gx gy] = meshgrid(x, y);
-% FIXME: Remove points too close to edge?
-[in on] = inpolygon(gx, gy, gxyz(:, 1), gxyz(:, 2));
+[in on] = inpolygon(gx, gy, gpolyw(:, 1), gpolyw(:, 2));
 gx = gx(in & ~on); gy = gy(in & ~on);
 gpts = cell2mat(cellfun(@gsmdem.sample, num2cell([gx gy], 2), 'UniformOutput', false));
-% gsmdem.plot(2); hold on; plot(gxyz(:, 1), gxyz(:, 2), 'y-'); plot(gx, gy, 'r*');
+% gsmdem.plot(2); hold on; plot(gpolyw(:, 1), gpolyw(:, 2), 'y-'); plot(gx, gy, 'r*');
 
-visible = voxelviewshed(gsmdem.X, gsmdem.Y, gsmdem.Z, images(1).cam.xyz);
-ind = gsmdem.xy2ind(gpts);
-v = visible(ind);
-
-guv = images(1).cam.project(gpts);
-% imshow(imread(images(1).path) / 1.5); hold on; plot(images(1).glacierpolys{1}(:, 1), images(1).glacierpolys{1}(:, 2), 'y-'); plot(guv(:, 1), guv(:, 2), 'r*');
-d = images(1).cam.invproject(guv);
-% gpts2 = images(1).cam.invproject(guv(1, :), gsmdem)
-i = 2;
-gpts2 = gsmdem.sample(images(1).cam.xyz, d(i, :), false, gpts(i, :), 100)
-gpts2 = gsmdem.sample(images(1).cam.xyz, d(i, :), false)
-bsxfun(@minus, gpts2, gpts(i, :))
-plot(gpts(i, 1), gpts(i, 2), 'ko'); hold on;
-plot(gpts2(:, 1), gpts2(:, 2), 'r*');
-
-gsmdem.plot(3); hold on
-plot3(images(1).cam.xyz(:, 1), images(1).cam.xyz(:, 2), images(1).cam.xyz(:, 3), 'k*');
-quiver3(images(1).cam.xyz(:, 1), images(1).cam.xyz(:, 2), images(1).cam.xyz(:, 3), d(i, 1), d(i, 2), d(i, 3), 7e3, 'g');
-plot3(gpts(i, 1), gpts(i, 2), gpts(i, 3), 'g*');
-plot3(gpts2(i, 1), gpts2(i, 2), gpts2(i, 3), 'r*');
-
-
-dem = DEM(peaks(25));
-dem.Z(1:15, 1:10) = NaN;
-o = [7 10 3];
-d = [1 0 -0.25];
-X = dem.intersectRay([o d])
-figure
-dem.plot(3); hold on
-plot3(o(:, 1), o(:, 2), o(:, 3), 'k*');
-quiver3(o(:, 1), o(:, 2), o(:, 3), d(:, 1), d(:, 2), d(:, 3), 10, 'g');
-plot3(X(:, 1), X(:, 2), X(:, 3), 'r*');
+%% Glacier points (take 3)
+% image 10
+gpolyi = [1786 778; 3710 700; 3754 1724; 1861 1736; 1786 778];
+gdx = 50; gdy = 50;
+x = min(gpolyi(:, 1)):gdx:max(gpolyi(:, 1));
+y = min(gpolyi(:, 2)):gdy:max(gpolyi(:, 2));
+[gx gy] = meshgrid(x, y);
+[in on] = inpolygon(gx, gy, gpolyi(:, 1), gpolyi(:, 2));
+gx = gx(in & ~on); gy = gy(in & ~on);
+guv = [gx gy];
+% plot(gpolyi(:, 1), gpolyi(:, 2), 'k-', gx, gy, 'r*')
 
 %% Velocities
-for i = 2:length(images);
-  i0 = i - 1;
+for i = 2%:length(images);
+  % S = [0 0 1 -100];
+  % S = [-0.1 -0.1 1 727310];
+  i = 11;
+  i0 = i - 10;
   I0 = imread(images(i0).path);
   I = imread(images(i).path);
-  p0 = images(i0).cam.project(gpts);
-  p = images(i).cam.project(gpts);
-  imshow(I0 / 1.5); hold on; plot(p(:, 1), p(:, 2), 'y*');
-  [du, dv] = templatematch(I0, I, p0(:, 1), p0(:, 2), 'templatewidth', 50, 'searchwidth', 200,'initialdu', p(:, 1) - p0(:, 1), 'initialdv', p(:, 2) - p0(:, 2), 'supersample', 1);
-  pXw = images(i).cam.invproject(p0 + [du, dv], gsmdem);
+  % p0 = images(i0).cam.project(gpts);
+  % p = images(i).cam.project(gpts);
+  p0 = guv;
+  p = images(i).cam.project(images(i0).cam.invproject(p0), true);
+  % imshow(I0 / 1.5); hold on; plot(p(:, 1), p(:, 2), 'y*');
+  [du, dv] = templatematch(I0, I, p0(:, 1), p0(:, 2), 'templatewidth', 50, 'searchwidth', 200,'initialdu', p(:, 1) - p0(:, 1), 'initialdv', p(:, 2) - p0(:, 2), 'supersample', 2);
+  d0 = images(i0).cam.invproject(p0);
+  d = images(i).cam.invproject(p0 + [du, dv]);
+  pXw0 = [];
+  for j = 1:size(d0, 1)
+    % X = gsmdem.sample(images(i0).cam.xyz, d0(j, :), true);
+    % [~, imin] = min(sum(bsxfun(@minus, X, gpts(j, :)).^2, 2));
+    % pXw0(j, :) = X(imin, :);
+    pXw0(j, :) = gsmdem.sample(images(i0).cam.xyz, d0(j, :), true);
+  end
+  pXw = [];
+  for j = 1:size(d, 1)
+    % X = gsmdem.sample(images(i).cam.xyz, d(j, :), false);
+    % [~, imin] = min(sum(bsxfun(@minus, X, pXw0(j, :)).^2, 2));
+    % pXw(j, :) = X(imin, :);
+    pXw(j, :) = gsmdem.sample(images(i).cam.xyz, d(j, :), true);
+  end
+  % pXw0 = images(i0).cam.invproject(p0, S);
+  % pXw = images(i).cam.invproject(p0 + [du, dv], S);
   figure
   imshow(I0 / 1.5); hold on;
-  s = 10; quiver(p0(:, 1), p0(:, 2), s * du, s * dv, 0, 'y')
+  pXi0 = images(i0).cam.project(images(i).cam.invproject(p0 + [du, dv]), true);
+  s = 5; quiver(p0(:, 1), p0(:, 2), s * (pXi0(:, 1) - p0(:, 1)), s * (pXi0(:, 2) - p0(:, 2)), 0, 'y');
   figure
   gsmdem.plot(2); hold on;
-  s = 1; quiver(gpts(:, 1), gpts(:, 2), s * (pXw(:, 1) - gpts(:, 1)), s * (pXw(:, 2) - gpts(:, 2)), 0, 'y')
+  V = load('/volumes/science-b/data/columbia/velocity/_yushin/landsat/2008/VEL20080326205136_20080411205135.mat');
+  V = V.VEL;
+  s = 5; quiver(repmat(V.Mx, 239, 1), repmat(V.My, 1, 254), s * V.dx, s * -V.dy, 0, 'k');
+  % s = 1; quiver(gpts(:, 1), gpts(:, 2), s * (pXw(:, 1) - gpts(:, 1)), s * (pXw(:, 2) - gpts(:, 2)), 0, 'y');
+  s = 5; quiver(pXw0(:, 1), pXw0(:, 2), s * (pXw(:, 1) - pXw0(:, 1)) * 24 / 10, s * (pXw(:, 2) - pXw0(:, 2)) * 24 / 10, 0, 'r');
 end
 
+
+j = 260;
+figure
+gsmdem.plot(2); hold on
+plot(images(i0).cam.xyz(:, 1), images(1).cam.xyz(:, 2), 'k*');
+quiver(images(1).cam.xyz(:, 1), images(1).cam.xyz(:, 2), d0(j, 1), d0(j, 2), 7e3, 'g');
+quiver(images(1).cam.xyz(:, 1), images(1).cam.xyz(:, 2), d(j, 1), d(j, 2), 7e3, 'r');
+plot(pXw0(j, 1), pXw0(j, 2), 'g*');
+plot(pXw(j, 1), pXw(j, 2), 'r*');
+
+
+%%%%%%%%%%%
 
 
 

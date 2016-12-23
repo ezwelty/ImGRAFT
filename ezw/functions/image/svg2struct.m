@@ -63,7 +63,7 @@ function S = svg2struct(svg, scale)
     end
     fnames = fieldnames(S);
     if any(strcmp(name, fnames))
-      nseries = sum(cell2mat(regexp(fnames, [name '_[0-9]+_'])))
+      nseries = sum(cell2mat(regexp(fnames, [name '_[0-9]+_'])));
       name = [name '_' num2str(nseries + 1) '_'];
     end
     switch tag
