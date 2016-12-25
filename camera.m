@@ -406,6 +406,11 @@ classdef camera
       xy = cam.undistort(xy);
     end
 
+    function uv = camera2image(cam, xy)
+      xy = cam.distort(xy);
+      uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
+    end
+
     function dxyz = camera2world(cam, xy)
       % Convert camera coordinates to world ray directions
       dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
@@ -427,11 +432,6 @@ classdef camera
       xy(~infront, :) = NaN;
     end
 
-    function uv = camera2image(cam, xy)
-      xy = cam.distort(xy);
-      uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
-    end
-
     function [uv, infront] = project(cam, xyz, ray_directions)
       % PROJECT  Project 3D world coordinates to 2D image coordinates.
       %
@@ -448,8 +448,15 @@ classdef camera
       if nargin < 3
         ray_directions = false;
       end
-      [xy, infront] = cam.world2camera(xyz, ray_directions);
-      uv = cam.camera2image(xy);
+      if size(xyz, 2) == 3
+        [xy, infront] = cam.world2camera(xyz, ray_directions);
+        uv = cam.camera2image(xy);
+      elseif size(xyz, 2) == 2
+        uv = cam.camera2image(xyz);
+        infront = true(size(xyz, 1), 1);
+      else
+        error('Unsupported point dimensions')
+      end
     end
 
     function xyz = invproject(cam, uv, S)
@@ -565,28 +572,63 @@ classdef camera
       % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
     end
 
-    function e = projerror(cam, xyz, uv, ray_directions, lxyz, luv)
+    function e = projerror(cam, xyz, uv, ray_directions)
+      if size(xyz, 1) == 0 || size(uv, 1) == 0
+        e = [];
+        return
+      end
       if nargin < 4
         ray_directions = false;
       end
-      e = [];
-      if ~isempty(xyz) && ~isempty(uv)
-        if size(xyz, 2) == 3
-          puv = cam.project(xyz, ray_directions);
-        elseif size(xyz, 2) == 2
-          puv = cam.camera2image(xyz);
-        end
-        e = puv - uv(:, 1:2);
-        if size(uv, 2) == 3
-          e = e .* uv(:, [3 3]);
+      puv = cam.project(xyz, ray_directions);
+      e = puv - uv(:, 1:2);
+      % e = sqrt(sum((puv - uv(:, 1:2)).^2, 2));
+      if size(uv, 2) > 2
+        e = e .* (uv(:, [3 3]) / mean(uv(:, 3)));
+        % e = e .* uv(:, 3) / mean(uv(:, 3));
+      end
+    end
+
+    function d = projdist(cam, xyz, uv, ray_directions)
+      if nargin < 4
+        ray_directions = false;
+      end
+      e = cam.projerror(xyz, uv, ray_directions);
+      d = sqrt(sum(e.^2, 2));
+    end
+
+    function [e, d] = projerror_nearest(cam, xyz, uv, ray_directions)
+      if size(xyz, 1) == 0 || size(uv, 1) == 0
+        e = [];
+        return
+      end
+      if nargin < 4
+        ray_directions = false;
+      end
+      pts = [];
+      for i = 1:length(xyz)
+        [puv, infront] = cam.project(xyz{i}, ray_directions);
+        puv(~infront, :) = [];
+        if size(puv, 1) == 1
+          pts = [pts ; puv];
+        elseif size(puv, 1) > 1
+          l = polylineLength(puv);
+          pts = [pts ; clipPoints(unique(round(resamplePolyline(puv, ceil(l))), 'rows'), cam.framebox)];
         end
       end
-      if nargin >= 6 && ~isempty(lxyz) && ~isempty(luv)
-        pluv = cam.project(lxyz);
-        pos = polylinePoint(pluv, projPointOnPolyline(luv, pluv));
-        % e = [sqrt(sum(e.^2, 2)); distancePointPolyline(luv, pluv)];
-        e = [e ; pos - luv];
+      [d, I] = min(pdist2(uv, pts, 'euclidean'), [], 2);
+      if size(pts, 1) > 0
+        e = pts(I, :) - uv;
+      else
+        e = uv; % HACK: In case all points are behind camera during optimization
       end
+    end
+
+    function d = projdist_nearest(cam, xyz, uv, ray_directions)
+      if nargin < 4
+        ray_directions = false;
+      end
+      [~, d] = projerror_nearest(cam, xyz, uv, ray_directions);
     end
 
     function [X, edge] = horizon(cam, dem, ddeg)
@@ -637,6 +679,10 @@ classdef camera
 
     function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams, lxyz, luv)
 
+      % Enforce defaults
+      if nargin < 5
+        fixparams = {};
+      end
       if nargin < 7
         lxyz = [];
         luv = [];
@@ -658,18 +704,16 @@ classdef camera
       if any(n_cams ~= [length(xyz), length(uv), length(flexparams), length(lxyz), length(luv)])
         error('Input arrays cannot be coerced to equal length')
       end
-      % Enforce defaults
-      if nargin < 5
-        fixparams = {};
-      end
 
       % Discard invalid points
       for i = 1:length(xyz)
-        is_valid = cams{i}.infront(xyz{i}) & ~(any(isnan(xyz{i}), 2) | any(isnan(uv{i}), 2));
-        xyz{i} = xyz{i}(is_valid, :);
-        uv{i} = uv{i}(is_valid, :);
-        if size(xyz{i}, 1) == 0
-          error(['No valid control points found for camera ' str2num(i)]);
+        if size(xyz{i}, 1) > 0
+          is_valid = cams{i}.infront(xyz{i}) & ~(any(isnan(xyz{i}), 2) | any(isnan(uv{i}), 2));
+          xyz{i} = xyz{i}(is_valid, :);
+          uv{i} = uv{i}(is_valid, :);
+          if size(xyz{i}, 1) == 0
+            error(['No valid control points found for camera ' str2num(i)]);
+          end
         end
       end
 
@@ -680,15 +724,61 @@ classdef camera
       n_fix = sum(fixparams);
 
       % Optimize
-      ef = @(m) reshape(cell2mat(cellfun(@projerror, camera.updateCams(m, cams, flexparams, fixparams), xyz, uv, repmat({false}, length(cams), 1), lxyz, luv, 'UniformOutput', false)), [], 1);
+      if nargin < 7
+        has_lines = false;
+      else
+        has_lines = true;
+      end
+      mxyz = cellfun(@(x, y) [mat2cell(x, ones(size(x, 1), 1)); y], xyz, lxyz, 'UniformOutput', false);
+      muv = cellfun(@(x, y) [x; y], uv, luv, 'UniformOutput', false);
+      function d = df(m)
+        newcams = camera.updateCams(m, cams, flexparams, fixparams);
+        % d = reshape(cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false)), [], 1);
+        % dmax = 2; w = 10;
+        % d = cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false));
+        % dist = sqrt(sum(d.^2, 2));
+        % d(dist > dmax, :) = d(dist > dmax, :) * w;
+        % d = reshape(d, [], 1);
+      % end
+        if ~has_lines
+          % d = reshape(cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false)), [], 1);
+          d = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
+        else
+          % dmax = 5;
+          % dp = cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false));
+          % dl = cell2mat(cellfun(@projerror_nearest, newcams, lxyz, luv, 'UniformOutput', false));
+          dp = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
+          dl = cell2mat(cellfun(@projdist_nearest, newcams, lxyz, luv, 'UniformOutput', false));
+          % dl(sqrt(sum(dl.^2, 2)) > dmax, :) = sqrt(dmax^2 / 2);
+          % dl(dl > dmax) = dmax;
+          d = [dp; dl];
+          % d = sum(sum(d.^2, 2));
+          % d = sign(d) .* (abs(d) > dmax);
+          % d = [dp; dl];
+          % d = sum(sqrt(sum(d.^2, 2)) > dmax);
+        end
+        d = reshape(d, [], 1);
+      end
       m0 = zeros(n_fix + sum(n_flex), 1);
-      mbest = LMFnlsq(ef, m0);
+      % HACK: Attempts to find a stable solution by reducing XTol incrementally
+      xtols = 2:-1:-7;
+      [mbest, ssq0] = LMFnlsq(@df, m0, 'XTol', 10 ^ xtols(1));
+      for xtol = xtols(2:end)
+        [mbest, ssq] = LMFnlsq(@df, mbest, 'XTol', 10 ^ xtol);
+        if abs(ssq - ssq0) < 1e-2
+          break
+        end
+      end
 
       % Compile results
       newcams = camera.updateCams(mbest, cams, flexparams, fixparams);
-      e = cellfun(@projerror, newcams, xyz, uv, repmat({false}, length(cams), 1), lxyz, luv, 'UniformOutput', false);
-      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
       n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
+      % e = mat2cell(reshape(df(mbest), [], 2), n);
+      % e = {reshape(df(mbest), [], 2)};
+      % e = {df(mbest)};
+      e = cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false);
+      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
+      % rss = cellfun(@(x) sum(x.^2), e);
       fit = struct();
       fit.rmse = sqrt(rss ./ n);
       n = sum(n);

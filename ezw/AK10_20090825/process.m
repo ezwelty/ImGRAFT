@@ -1,6 +1,6 @@
 %%% AK03b_20080921
 
-% matlab -display :0.0 -nodesktop
+% /applications/matlab_r2016b.app/bin/matlab -display :0.0 -nodesktop -display :0.0 -nodesktop
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
 root_dir = fullfile('ezw', 'AK10_20090825');
@@ -12,7 +12,7 @@ img_paths = arrayfun(@(f) fullfile(f.folder, f.name), img_files, 'UniformOutput'
 images = loadimages(img_paths, c);
 
 %% Load DEM
-[Z, ~, bbox] = geotiffread('/volumes/science-b/data/columbia/dem/2004 Aerometric/20090803_2m.tif');
+[Z, ~, bbox] = geotiffread('/volumes/science/data/columbia/dem/2004 Aerometric/20090803_2m.tif');
 gdem = DEM(double(Z), bbox(:, 1), flip(bbox(:, 2)));
 viewbox = images(1).cam.viewbox(20 * 1e3);
 gcdem = gdem.crop(viewbox(:, 1), viewbox(:, 2), [0 Inf]);
@@ -76,27 +76,97 @@ cams = {images(is_anchor).cam};
 gcp = arrayfun(@(img) cell2mat(struct2cell(img.svg.gcp)), images(is_anchor), 'UniformOutput', false);
 uv = cellfun(@(x) x(:, 1:2), gcp, 'UniformOutput', false);
 xyz = cellfun(@(x) x(:, 3:5), gcp, 'UniformOutput', false);
+%% Lines
 % Horizon
 hxyz = {images(is_anchor_ind(1)).cam.horizon(gcdem, 0.1)};
-huv = {};
+% Coastline
+shp = shaperead('/volumes/science/data/columbia/outline/coastline.shp');
+cxyz = arrayfun(@(s) [s.X' s.Y' repmat(17, length(s.X), 1)], shp, 'UniformOutput', false);
+lxyz = {[hxyz; cxyz]};
+% Traces
+luv = {};
 for i = 1:length(is_anchor_ind)
+  traces = {};
   if isfield(images(is_anchor_ind(i)).svg, 'horizon')
-    % horizon = {};
-    % for j = fieldnames(images(is_anchor_ind(i)).svg.horizon)'
-    %   horizon{end + 1} = images(is_anchor_ind(i)).svg.horizon.(j{1}) + 0.5;
-    % end
-    horizon_pts = [];
-    for j = fieldnames(images(is_anchor_ind(i)).svg.horizon)'
-      temp = images(is_anchor_ind(i)).svg.horizon.(j{1}) + 0.5;
-      l = polylineLength(temp);
-      horizon_pts = [horizon_pts ; resamplePolyline(temp, round(l / 10))];
-    end
-    huv{i} = horizon_pts;
+    traces = [traces; struct2cell(images(is_anchor_ind(i)).svg.horizon)];
   end
+  if isfield(images(is_anchor_ind(i)).svg, 'coast')
+    traces = [traces; struct2cell(images(is_anchor_ind(i)).svg.coast)];
+  end
+  for j = 1:length(traces)
+    temp = traces{j} + 0.5;
+    l = polylineLength(temp);
+    traces{j} = resamplePolyline(temp, round(l / 50));
+  end
+  luv{i} = cell2mat(traces);
 end
-lxyz = hxyz;
-luv = huv;
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1 2 3], 'p', [1 2]}, lxyz, luv)
+% Optimize
+
+% [newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1 2 3], 'p', [1 2]}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'})
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f'})
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1]})
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1 2]})
+
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {{'viewdir'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f'}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c'}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c', 'k', [1 2 3]}, lxyz, luv)
+
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {{'viewdir'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f'}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c'}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c', 'k', [1 2 3]}, lxyz, luv)
+
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1]}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', 'p'}, lxyz, luv)
+
+
+[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {{'viewdir'}})
+
+[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir', 'f', 'c', 'k'}}, {}, lxyz, luv)
+
+[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir', [2]}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir', [3]}}, {}, lxyz, luv)
+
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {{'viewdir'}}, {}, lxyz, luv)
+
+
+[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'f'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'c'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'k'}}, {}, lxyz, luv)
+
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', 'f', 'c', 'k'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {{'viewdir', 'f', 'c', 'k'}}, {}, lxyz, luv)
+
+reps = 2;
+for i = 1:reps
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', [1]}}, {}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', [2]}}, {}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', [3]}}, {}, lxyz, luv)
+end
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'f'}, lxyz, luv)
+for i = 1:reps
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'f', [1]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'f', [2]}, lxyz, luv)
+end
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'c'}, lxyz, luv)
+for i = 1:reps
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'c', [1]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'c', [2]}, lxyz, luv)
+end
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k'}, lxyz, luv)
+for i = 1:reps
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [1]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [2]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [3]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [4]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [5]}, lxyz, luv)
+  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [6]}, lxyz, luv)
+end
+
 % Plot reprojection errors
 for i = 1:length(newcams)
   imshow(imread(images(is_anchor_ind(i)).path)); hold on
@@ -105,11 +175,13 @@ for i = 1:length(newcams)
   plot(uv{i}(:, 1), uv{i}(:, 2), 'g*');
   s = 1; quiver(uv{i}(:, 1), uv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'y');
   % Line errors
-  duv = newcams{i}.projerror([], [], [], lxyz{i}, luv{i});
-  pluv = newcams{i}.project(lxyz{i});
   plot(luv{i}(:, 1), luv{i}(:, 2), 'g*');
-  plot(pluv(:, 1), pluv(:, 2), 'r-');
+  duv = newcams{i}.projerror_nearest(lxyz{i}, luv{i});
   s = 1; quiver(luv{i}(:, 1), luv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'y');
+  for j = 1:length(lxyz{i})
+    pluv = newcams{i}.project(lxyz{i}{j});
+    plot(pluv(:, 1), pluv(:, 2), 'r-');
+  end
   if length(newcams) > 1
     pause();
   end
