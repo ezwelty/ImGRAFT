@@ -369,6 +369,7 @@ classdef DEM < handle
         first = true;
       end
 
+      % TODO: filter out points outside DEM
       if nargin < 3
         % sample at origin
         [xi, yi] = tin.Dzmin.xy2ind(origin);
@@ -404,6 +405,7 @@ classdef DEM < handle
         imax = [tin.nx tin.ny];
       else
         % Apply search radius (if specified)
+        % FIXME: Broken
         % Snap search radius to grid cell boundaries
         imin = floor((xy0(1:2) - r0 - tin.min(1:2)) ./ [tin.dx, tin.dy]);
         imax = ceil((xy0(1:2) + r0 - tin.min(1:2)) ./ [tin.dx, tin.dy]);
@@ -486,6 +488,7 @@ classdef DEM < handle
         % Return list of traversed voxels
         %voxels = [];
         z_in = start(3);
+        i_cell = 1;
         while (x <= tin.nx) && (x >= 1) && (y <= tin.ny) && (y >= 1)
 
           % TODO: Check if origin is below surface
@@ -494,12 +497,7 @@ classdef DEM < handle
           % either entered voxel at tMaxX or tMaxY
           % if tMaxX: x != voxels(end, 1)
           % if tMaxY: y != voxels(end, 2)
-
-          if tMaxX < tMaxY
-            z_out = start(3) + tMaxX * direction(3);
-          else
-            z_out = start(3) + tMaxY * direction(3);
-          end
+          z_out = origin(3) + min(tMaxY, tMaxX) * direction(3);
 
           % Test for intersection of both possible triangles
           % Convert to upper-left matrix indices (flip y)

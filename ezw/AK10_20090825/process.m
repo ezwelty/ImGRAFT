@@ -1,18 +1,38 @@
-%%% AK03b_20080921
+%%% AK10_20090825
 
 % /applications/matlab_r2016b.app/bin/matlab -display :0.0 -nodesktop -display :0.0 -nodesktop
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
-root_dir = fullfile('ezw', 'AK10_20090825');
+project_root = fullfile('ezw', 'AK10_20090825');
+data_root = fullfile('/', 'volumes', 'science-b', 'data', 'columbia');
 
 %% Load images
 c = camera('xyz', [499211.336 6783755.954 478.96], 'viewdir', [-165 -10 -4]);
-img_files = dir(fullfile(root_dir, 'images', '*.JPG'));
+img_files = dir(fullfile(project_root, 'images', '*.JPG'));
 img_paths = arrayfun(@(f) fullfile(f.folder, f.name), img_files, 'UniformOutput', false);
 images = loadimages(img_paths, c);
 
+%% Load control data
+GCP = readtable(fullfile('ezw', 'gcp.tsv'), 'filetype', 'text', 'delimiter', '\t');
+GCP.Properties.RowNames = lower(GCP.name);
+svg_files = dir(fullfile(project_root, 'images', '*.svg'));
+svg_paths = arrayfun(@(f) fullfile(f.folder, f.name), svg_files, 'UniformOutput', false);
+svg = cellfun(@svg2struct, svg_paths, 'UniformOutput', false);
+for i = 1:length(svg_paths)
+  [folder, file, ext] = fileparts(svg_paths{i});
+  has_svg = strcmp(fullfile(folder, [file '.JPG']), {images.path});
+  images(has_svg).svg = svg{i};
+  if isfield(svg{i}, 'gcp')
+    gcp_names = fieldnames(svg{i}.gcp);
+    gcp_xyz = GCP{lower(gcp_names), {'x_wgs84', 'y_wgs84', 'z_hae'}};
+    for j = 1:length(gcp_names)
+      images(has_svg).svg.gcp.(gcp_names{j}) = [images(has_svg).svg.gcp.(gcp_names{j}) + 0.5, gcp_xyz(j, :)];
+    end
+  end
+end
+
 %% Load DEM
-[Z, ~, bbox] = geotiffread('/volumes/science/data/columbia/dem/2004 Aerometric/20090803_2m.tif');
+[Z, ~, bbox] = geotiffread(fullfile(data_root, 'dem', '2004 Aerometric', '20090827_2m.tif'));
 gdem = DEM(double(Z), bbox(:, 1), flip(bbox(:, 2)));
 viewbox = images(1).cam.viewbox(20 * 1e3);
 gcdem = gdem.crop(viewbox(:, 1), viewbox(:, 2), [0 Inf]);
@@ -48,31 +68,12 @@ end
 gsmdem.Z(ind) = NaN;
 % gsmdem.plot(2);
 
-%% Load control points
-GCP = readtable(fullfile('ezw', 'gcp.tsv'), 'filetype', 'text', 'delimiter', '\t');
-GCP.Properties.RowNames = lower(GCP.name);
-svg_files = dir(fullfile(root_dir, 'images', '*.svg'));
-svg_paths = arrayfun(@(f) fullfile(f.folder, f.name), svg_files, 'UniformOutput', false);
-svg = cellfun(@svg2struct, svg_paths, 'UniformOutput', false);
-for i = 1:length(svg_paths)
-  [folder, file, ext] = fileparts(svg_paths{i});
-  has_svg = strcmp(fullfile(folder, [file '.JPG']), {images.path});
-  images(has_svg).svg = svg{i};
-  if isfield(svg{i}, 'gcp')
-    gcp_names = fieldnames(svg{i}.gcp);
-    gcp_xyz = GCP{lower(gcp_names), {'x_wgs84', 'y_wgs84', 'z_hae'}};
-    for j = 1:length(gcp_names)
-      images(has_svg).svg.gcp.(gcp_names{j}) = [images(has_svg).svg.gcp.(gcp_names{j}) + 0.5, gcp_xyz(j, :)];
-    end
-  end
-end
-
 %% Calibrate anchor images
 % (images with svg.gcp field)
 is_anchor = arrayfun(@(img) eval('isfield(img.svg, ''gcp'')'), images)';
 is_anchor_ind = find(is_anchor);
-cams = {images(is_anchor).cam};
-% GCP
+cams = {images(is_anchor).cam.idealize};
+%% Points
 gcp = arrayfun(@(img) cell2mat(struct2cell(img.svg.gcp)), images(is_anchor), 'UniformOutput', false);
 uv = cellfun(@(x) x(:, 1:2), gcp, 'UniformOutput', false);
 xyz = cellfun(@(x) x(:, 3:5), gcp, 'UniformOutput', false);
@@ -80,7 +81,7 @@ xyz = cellfun(@(x) x(:, 3:5), gcp, 'UniformOutput', false);
 % Horizon
 hxyz = {images(is_anchor_ind(1)).cam.horizon(gcdem, 0.1)};
 % Coastline
-shp = shaperead('/volumes/science/data/columbia/outline/coastline.shp');
+shp = shaperead(fullfile(data_root, 'outline', 'coastline.shp'));
 cxyz = arrayfun(@(s) [s.X' s.Y' repmat(17, length(s.X), 1)], shp, 'UniformOutput', false);
 lxyz = {[hxyz; cxyz]};
 % Traces
@@ -96,78 +97,35 @@ for i = 1:length(is_anchor_ind)
   for j = 1:length(traces)
     temp = traces{j} + 0.5;
     l = polylineLength(temp);
-    traces{j} = resamplePolyline(temp, round(l / 50));
+    traces{j} = resamplePolyline(temp, round(l / 10));
   end
   luv{i} = cell2mat(traces);
 end
-% Optimize
-
-% [newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1 2 3], 'p', [1 2]}, lxyz, luv)
+%% Optimize
+% FIXME: Solutions using lines are unstable!
+% Adjust xtol (see camera.optimizeCams)
+% HACK: Converge on full model:
 [newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'})
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f'})
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1]})
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1 2]})
-
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {{'viewdir'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f'}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c'}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c', 'k', [1 2 3]}, lxyz, luv)
-
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {{'viewdir'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f'}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c'}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {'viewdir'}, {'f', 'c', 'k', [1 2 3]}, lxyz, luv)
-
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', [1]}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {'viewdir'}, {'f', 'k', 'p'}, lxyz, luv)
-
-
-[newcams, fit] = camera.optimizeCams(cams, xyz, uv, {{'viewdir'}})
-
-[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir', 'f', 'c', 'k'}}, {}, lxyz, luv)
-
-[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir', [2]}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir', [3]}}, {}, lxyz, luv)
-
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {{'viewdir'}}, {}, lxyz, luv)
-
-
-[newcams, fit] = camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'f'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'c'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'k'}}, {}, lxyz, luv)
-
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', 'f', 'c', 'k'}}, {}, lxyz, luv)
-[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {{'viewdir', 'f', 'c', 'k'}}, {}, lxyz, luv)
-
-reps = 2;
-for i = 1:reps
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', [1]}}, {}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', [2]}}, {}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir', [3]}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{'viewdir'}}, {}, lxyz, luv)
+[newcams, fit] = camera.optimizeCams(newcams, xyz, uv, {{'viewdir', 'f'}}, {}, lxyz, luv)
+% Then, iterate as points (slow, but effective):
+% (for best results, set dmax threshold)
+dmax = 10;
+freeparams = {{'viewdir', 'f', 'k', [1 2]}};
+for i = 1:50
+  previous_cams = newcams;
+  previous_rmse = fit.rmse;
+  duv = newcams{1}.projerror_nearest(lxyz{1}, luv{1});
+  lxyz2 = newcams{1}.xyz + newcams{1}.invproject(luv{1} + duv) * 1000;
+  [newcams, fit] = camera.optimizeCams(newcams{1}, [xyz{1}; lxyz2], [uv{1}; luv{1}], freeparams, [], [], [], dmax)
+  % [newcams, fit] = cams{1}.optimizeR(luv{1} + duv, luv{1}), newcams = {newcams};
+  if fit.rmse > previous_rmse
+    newcams = previous_cams;
+    break
+  end
 end
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'f'}, lxyz, luv)
-for i = 1:reps
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'f', [1]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'f', [2]}, lxyz, luv)
-end
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'c'}, lxyz, luv)
-for i = 1:reps
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'c', [1]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'c', [2]}, lxyz, luv)
-end
-[newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k'}, lxyz, luv)
-for i = 1:reps
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [1]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [2]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [3]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [4]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [5]}, lxyz, luv)
-  [newcams, fit] = camera.optimizeCams(newcams, {[]}, {[]}, {{}}, {'k', [6]}, lxyz, luv)
-end
-
-% Plot reprojection errors
+%% Plot results
+figure()
 for i = 1:length(newcams)
   imshow(imread(images(is_anchor_ind(i)).path)); hold on
   % Point errors
@@ -186,51 +144,10 @@ for i = 1:length(newcams)
     pause();
   end
 end
-% Save results
+%% Save results
 for i = 1:length(newcams)
   images(is_anchor_ind(i)).cam = newcams{i};
 end
-
-%% Horizon alignments
-i = find(is_anchor, 1);
-%% Load models and traced horizons
-[X, edge] = images(i).cam.horizon(gcdem, 0.1);
-% Plot
-uv = images(i).cam.project(X);
-I = imread(images(i).path);
-imshow(I / 1.5); hold on
-plot(uv(:, 1), uv(:, 2), 'y-');
-% Convert structure layers to cell
-horizon = {};
-for j = fieldnames(images(i).svg.horizon)'
-  horizon{end + 1} = images(i).svg.horizon.(j{1}) + 0.5;
-end
-%% Compute horizon from viewpoint
-% resample polyline
-horizon_pts = [];
-for j = 1:length(horizon)
-  l = polylineLength(horizon{j});
-  horizon_l = horizon_l + l;
-  horizon_pts = [horizon_pts ; resamplePolyline(horizon{j}, round(l / 2))];
-end
-% Count consecutive ones
-% http://stackoverflow.com/questions/6330588/count-the-occurrence-of-consecutive-1s-in-0-1-data-in-matlab
-%% Optimization
-% Adjust camera (except position) given modeled / image edges
-[newcams, fit] = camera.optimizeCams({images(i).cam}, {X}, {horizon_pts}, {'viewdir', 'f', 'k', [1]}, {}, true)
-I = imread(images(i).path);
-imshow(I / 1.5); hold on
-% for j = 1:length(horizon)
-%   plot(horizon{j}(:, 1), horizon{j}(:, 2), 'y-')
-% end
-uv0 = images(i).cam.project(X);
-plot(uv0(:, 1), uv0(:, 2), 'r-')
-uv = newcams{1}.project(X);
-plot(uv(:, 1), uv(:, 2), 'g-')
-% Save
-images(i).cam = newcams{1};
-%% Earth Curvature and refraction!?
-% e.g. http://webhelp.esri.com/arcgisdesktop/9.2/index.cfm?topicname=how_viewshed_works
 
 %% Assign images to nearest anchor
 anchor_dates = [images(is_anchor).date];
@@ -309,13 +226,24 @@ for i = find(~is_anchor)
   for j = 1:length(images(i0).glacier)
     images(i).glacier{j} = images(i).cam.project(images(i0).cam.invproject(images(i0).glacier{j}), true);
   end
+  % % Plot transformed traces
+  % figure()
+  % imshow(I / 1.5), hold on
+  % for j = fieldnames(images(i0).svg.horizon)'
+  %   puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.horizon.(j{1})), true);
+  %   plot(puv(:, 1), puv(:, 2), 'r-')
+  % end
+  % for j = fieldnames(images(i0).svg.coast)'
+  %   puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.coast.(j{1})), true);
+  %   plot(puv(:, 1), puv(:, 2), 'r-')
+  % end
 end
 
 %% Glacier points
 i = find(is_anchor, 1);
 gxyz = images(i).cam.invproject(images(i).glacier{1}, gsmdem);
 gxyz(any(isnan(gxyz), 2), :) = [];
-gdx = 100; gdy = 100;
+gdx = 10; gdy = 10;
 x = min(gxyz(:, 1)):gdx:max(gxyz(:, 1));
 y = min(gxyz(:, 2)):gdy:max(gxyz(:, 2));
 [gx gy] = meshgrid(x, y);
@@ -338,17 +266,33 @@ gv = bwmorph(gv, 'shrink', 1);
 gpts = cell2mat(cellfun(@gsmdem.sample, num2cell([gx(gv(:)) gy(gv(:))], 2), 'UniformOutput', false));
 gsmdem.plot(2); hold on; plot(gxyz(:, 1), gxyz(:, 2), 'y-'); plot(g(:, 1), g(:, 2), 'y*'); plot(gpts(:, 1), gpts(:, 2), 'r*');
 
+% (v2: dense pixel grid)
+i0 = find(is_anchor, 1);
+% Generate grid of points in glacier polygons
+gdu = 50; gdv = 50;
+p0 = [];
+for j = 1:length(images(i0).glacier)
+  u = min(images(i0).glacier{j}(:, 1)):gdu:max(images(i0).glacier{j}(:, 1));
+  v = min(images(i0).glacier{j}(:, 2)):gdv:max(images(i0).glacier{j}(:, 2));
+  [pu pv] = meshgrid(u, v);
+  [in on] = inpolygon(pu, pv, images(i0).glacier{j}(:, 1), images(i0).glacier{j}(:, 2));
+  pu = pu(in & ~on); pv = pv(in & ~on);
+  p0 = [p0; pu pv];
+end
+gpts = images(i0).cam.invproject(p0, gsmdem);
+
 %% Velocities
-Mi = {images(1).cam.project(gpts)};
+i_start = i0;
+Mi = {images(i_start).cam.project(gpts)};
 Mw = {gpts};
-for i = 2:length(images)
-  i0 = i - 1;
+for i0 = i_start%:length(images)
+  i = i0 + 1;
   I0 = imread(images(i0).path);
   I = imread(images(i).path);
   p0 = images(i0).cam.project(gpts);
   p = images(i).cam.project(gpts);
-  % imshow(I0 / 1.5); hold on; plot(p(:, 1), p(:, 2), 'y*');
-  [du, dv] = templatematch(I0, I, p0(:, 1), p0(:, 2), 'templatewidth', 20, 'searchwidth', 40,'initialdu', p(:, 1) - p0(:, 1), 'initialdv', p(:, 2) - p0(:, 2), 'supersample', 2);
+  % imshow(I0 / 1.5); hold on; plot(p0(:, 1), p0(:, 2), 'y*');
+  [du, dv] = templatematch(I0, I, p0(:, 1), p0(:, 2), 'templatewidth', 10, 'searchwidth', 80,'initialdu', p(:, 1) - p0(:, 1), 'initialdv', p(:, 2) - p0(:, 2), 'supersample', 2);
   % pXw = images(i).cam.invproject(p0 + [du, dv], gsmdem);
   d = images(i).cam.invproject(p0 + [du, dv]);
   pXw = nan(size(d));
@@ -360,8 +304,8 @@ for i = 2:length(images)
       pXw(j, :) = gsmdem.sample(images(i).cam.xyz, d(j, :), true);
     end
   end
-  Mw{i} = pXw;
-  Mi{i} = images(1).cam.project(images(i).cam.invproject(p0 + [du, dv]), true);
+  Mw{end + 1} = pXw;
+  Mi{end + 1} = images(i_start).cam.project(images(i).cam.invproject(p0 + [du, dv]), true);
   % gpts = pXw;
   % figure
   % imshow(I0 / 1.5); hold on;
@@ -373,53 +317,136 @@ for i = 2:length(images)
   % s = 5; quiver(gpts(:, 1), gpts(:, 2), s * (pXw(:, 1) - gpts(:, 1)), s * (pXw(:, 2) - gpts(:, 2)), 0, 'r');
 end
 
+[ortho, ref] = geotiffread(fullfile(data_root, 'ortho', '2002 Aerometric', '20090827_2m.tif'));
+
+Xi = nan(1, 3);
+Xw = images(i_start).cam.invproject(Xi, gsmdem);
+
+image_fig = figure
+imshow(imread(images(i_start).path)); hold on
+plot(Xi(:, 1), Xi(:, 2), 'y-', 'XDataSource', 'Xi(:, 1)', 'YDataSource', 'Xi(:, 2)'); hold off
+linkdata on
+
+world_fig = figure
+% gsmdem.plot(2); hold on;
+mapshow(ortho, ref); hold on;
+plot(Xw(:, 1), Xw(:, 2), 'y-', 'XDataSource', 'Xw(:, 1)', 'YDataSource', 'Xw(:, 2)'); hold off
+linkdata on
+
+figure(image_fig)
+Xi = ginput();
+Xw = images(i_start).cam.invproject(Xi, gsmdem);
+
+figure(world_fig)
+temp = ginput();
+temp2 = nan(size(temp, 1), 3);
+for i = 1:size(temp2, 1)
+  temp2(i, :) = gsmdem.sample(temp(i, :));
+end
+Xw = temp2;
+Xi = images(i_start).cam.project(Xw);
+
+
 %% Compute average vector for each point
-V = load('/Volumes/Science-B/data/columbia/velocity/_yushin/airborne/20090803_20090827_GRD.mat');
+V = load(fullfile(data_root, 'velocity', '_yushin', 'airborne', '20090803_20090827_GRD.mat'));
 V = V.GRD;
+%
 w = reshape(cell2mat(Mw), [size(gpts, 1), 3, length(Mw)]);
 dw = bsxfun(@minus, w, w(:, :, 1));
 dwm = nanmedian(dw(:, :, 2:end), 3);
+%
 figure
 gsmdem.plot(2); hold on;
 s = 5; quiver(repmat(V.Xm, size(V.Ym, 1), 1), repmat(V.Ym, 1, size(V.Xm, 2)), s * V.Gdxx, s * V.Gdyy, 0, 'k');
 s = 5; quiver(gpts(:, 1), gpts(:, 2), s * dwm(:, 1), s * dwm(:, 2), 0, 'r');
-% previous results
-w = reshape(cell2mat(oldMw), [size(gpts, 1), 3, length(oldMw)]);
-dw = bsxfun(@minus, w, w(:, :, 1));
-dwm = nanmedian(dw(:, :, 2:end), 3);
-s = 5; quiver(gpts(:, 1), gpts(:, 2), s * dwm(:, 1), s * dwm(:, 2), 0, 'g');
+j = find(abs(s * dwm(:, 1) - -24.95) < 1e-1 & abs(s * dwm(:, 2) - 54.4) < 1e-1);
 
-%% Plot each frame in turn
-w = reshape(cell2mat(oldMw), [size(gpts, 1), 3, length(oldMw)]);
-dw = bsxfun(@minus, w, w(:, :, 1));
+% % previous results
+% w = reshape(cell2mat(oldMw), [size(gpts, 1), 3, length(oldMw)]);
+% dw = bsxfun(@minus, w, w(:, :, 1));
+% dwm = nanmedian(dw(:, :, 2:end), 3);
+% s = 5; quiver(gpts(:, 1), gpts(:, 2), s * dwm(:, 1), s * dwm(:, 2), 0, 'g');
+
+% %% Plot each frame in turn
+% w = reshape(cell2mat(Mw), [size(gpts, 1), 3, length(Mw)]);
+% dw = bsxfun(@minus, w, w(:, :, 1));
+% figure
+% gsmdem.plot(2); hold on;
+% s = 5; quiver(repmat(V.Xm, size(V.Ym, 1), 1), repmat(V.Ym, 1, size(V.Xm, 2)), s * V.Gdxx, s * V.Gdyy, 0, 'k');
+% s = 5; h = quiver(gpts(:, 1), gpts(:, 2), s * dw(:, 1, 2), s * dw(:, 2, 2), 0, 'r');
+% for i = 3:size(dw, 3)
+%   pause();
+%   set(h, 'udata', s * dw(:, 1, i), 'vdata', s * dw(:, 2, i));
+% end
+
 figure
-gsmdem.plot(2); hold on;
-s = 5; quiver(repmat(V.Xm, size(V.Ym, 1), 1), repmat(V.Ym, 1, size(V.Xm, 2)), s * V.Gdxx, s * V.Gdyy, 0, 'k');
-s = 5; h = quiver(gpts(:, 1), gpts(:, 2), s * dw(:, 1, 2), s * dw(:, 2, 2), 0, 'r');
-for i = 3:size(dw, 3)
-  pause();
-  set(h, 'udata', s * dw(:, 1, i), 'vdata', s * dw(:, 2, i));
+imshow(imread(images(i_start).path)); hold on
+s = 3;
+% plot(Mi{1}(:, 1), Mi{1}(:, 2), 'g*');
+for i = 2:length(Mi)
+  quiver(Mi{i - 1}(:, 1), Mi{i - 1}(:, 2), s * (Mi{i}(:, 1) - Mi{i - 1}(:, 1)), s * (Mi{i}(:, 2) - Mi{i - 1}(:, 2)), 0, 'r');
+  quiver(Mi{i - 1}(j, 1), Mi{i - 1}(j, 2), s * (Mi{i}(j, 1) - Mi{i - 1}(j, 1)), s * (Mi{i}(j, 2) - Mi{i - 1}(j, 2)), 0, 'y');
+end
+quiver(p0(:, 1), p0(:, 2), s * (p1(:, 1) - p0(:, 1)), s * (p1(:, 2) - p0(:, 2)), 0, 'g');
+%
+vx0 = repmat(V.Xm, size(V.Ym, 1), 1); vx0 = vx0(:);
+vy0 = repmat(V.Ym, 1, size(V.Xm, 2)); vy0 = vy0(:);
+dvx = V.Gdxx(:);
+dvy = V.Gdyy(:);
+vx1 = vx0 + dvx;
+vy1 = vy0 + dvy;
+has_nan = isnan(vx0) | isnan(vy0) | isnan(vx1) | isnan(vy1);
+out_of_bounds = vx0 < gsmdem.min(1) | vx0 > gsmdem.max(1) | vy0 < gsmdem.min(2) | vy0 > gsmdem.max(2) | vx1 < gsmdem.min(1) | vx1 > gsmdem.max(1) | vy1 < gsmdem.min(2) | vy1 > gsmdem.max(2);
+vx0(has_nan | out_of_bounds) = [];
+vy0(has_nan | out_of_bounds) = [];
+vx1(has_nan | out_of_bounds) = [];
+vy1(has_nan | out_of_bounds) = [];
+X0 = nan(length(vx0), 3);
+X1 = X0;
+for i = 1:size(X0, 1)
+  X0(i, :) = gsmdem.sample([vx0(i) vy0(i)]);
+  X1(i, :) = gsmdem.sample([vx1(i) vy1(i)]);
+end
+p0 = images(i_start).cam.project(X0);
+p1 = images(i_start).cam.project(X1);
+
+figure
+gsmdem.plot(2); hold on
+s = 3;
+quiver(repmat(V.Xm, size(V.Ym, 1), 1), repmat(V.Ym, 1, size(V.Xm, 2)), s * V.Gdxx, s * V.Gdyy, 0, 'k');
+% plot(Mw{1}(:, 1), Mw{1}(:, 2), 'g*');
+for i = 2:length(Mw)
+  directions = images(i_start).cam.invproject(Mi{i});
+  temp = nan(size(directions));
+  for j = 1:size(directions, 1)
+    if all(~isnan(directions(j, :)))
+      temp(j, :) = intersectRayPlane(images(i_start).cam.xyz, directions(j, :), [0 0 -1 Mw{1}(j, 3)]);
+    end
+  end
+  quiver(Mw{i - 1}(:, 1), Mw{i - 1}(:, 2), s * (temp(:, 1) - Mw{i - 1}(:, 1)), s * (temp(:, 2) - Mw{i - 1}(:, 2)), 0, 'y');
+  % quiver(Mw{i - 1}(:, 1), Mw{i - 1}(:, 2), s * (Mw{i}(:, 1) - Mw{i - 1}(:, 1)), s * (Mw{i}(:, 2) - Mw{i - 1}(:, 2)), 0, 'y');
 end
 
-% figure
-% imshow(imread(images(1).path)); hold on
-% plot(Mi{2}(:, 1), Mi{2}(:, 2), 'y*');
-% for i = 3:length(images)
-%   plot(Mi{i}(:, 1), Mi{i}(:, 2), 'r*');
-% end
-%
-% figure
-% gsmdem.plot(2); hold on
-% plot(Mw{2}(:, 1), Mw{2}(:, 2), 'y*');
-% for i = 3:length(images)
-%   plot(Mw{i}(:, 1), Mw{i}(:, 2), 'r.');
-% end
 
 
 
 %%%%%%%%%%%
 
+tic
+directions = images(i0).cam.invproject(p0);
+gpts2 = nan(size(directions));
+for i = 1:size(directions, 1)
+  gpts2(i, :) = gsmdem.sample(images(i0).cam.xyz, directions(i, :), true, gpts(i, :), 100);
+end
+toc
 
+tic
+directions = images(i0).cam.invproject(p0);
+gpts3 = nan(size(directions));
+for i = 1:size(directions, 1)
+  gpts3(i, :) = intersectRayPlane(images(i0).cam.xyz, directions(i, :), [0 0 -1 gpts(i, 3)]);
+end
+toc
 
 
 
@@ -906,40 +933,15 @@ xyz = [S(1).X' S(1).Y' repmat(0, length(S(1).X), 1)];
 uv = cam.project(xyz);
 plot(uv(:, 1), uv(:, 2), 'g-');
 
-%%%%
 
-Ia = imread('ezw/CG05/CG05_20050811_130000.JPG');
-Ib = imread('ezw/CG05/CG05_20050812_130000.JPG');
+%%%%%%%%%%%%
 
-% Approximate estimate of image shift using a single large template
-[du0, dv0] = templatematch(Ia, Ib, 1600, 800, 'templatewidth', 261, 'searchwidth', 400, 'supersample', 0.5)
-
-% Gather image correspondences using a grid of probe points.
-[pu, pv] = meshgrid(1000:50:1900, 500:50:1200);
-[du, dv, C] = templatematch(Ia, Ib, pu, pv, 'templatewidth', 61, 'searchwidth', 81, 'supersample', 3, 'initialdu', du0, 'initialdv', dv0);
-figure
-imshow(Ia / 1.5); hold on;
-s = 1; quiver(pu, pv, s * du, s * dv, 0, 'y')
-
-% % Approximate estimate of image shift using a single large template
-% [du0, dv0] = templatematch(Ia, Ib, 3800, 1200, 'templatewidth', 261, 'searchwidth', 400, 'supersample', 0.5)
-%
-% % Gather image correspondences using a grid of probe points.
-% [pu, pv] = meshgrid(3400:10:4200, 1200:10:1400);
-% [du, dv, C] = templatematch(Ia, Ib, pu, pv, 'templatewidth', 61, 'searchwidth', 81, 'supersample', 3, 'initialdu', du0, 'initialdv', dv0);
-% figure
-% imshow(Ia / 1.5); hold on;
-% s = 1; quiver(pu, pv, s * du, s * dv, 0, 'y')
-
-% Determine camera rotation from point correspondences
-xyzi = cam.invproject([pu(:) pv(:)]);
-rays = [repmat(cam.xyz, size(v1, 1), 1) bsxfun(@minus, xyzi, cam.xyz)];
-% intersect with DEM
-xyz = nan(size(rays, 1), 3);
-for i = 1:size(rays, 1)
-  xyz(i, :) = intersectRayDEM(rays(i, :), dem);
-end
-
-%xyz = cam.invproject([pu(:) pv(:)], dem);
-[cam2, rmse, ~] = cam.optimizecam(xyz, [pu(:) + du(:), pv(:) + dv(:)], '00000111000000000000')
-(cam2.viewdir - cam.viewdir) * 180 / pi
+%% Earth Curvature and refraction!?
+% e.g. http://webhelp.esri.com/arcgisdesktop/9.2/index.cfm?topicname=how_viewshed_works
+% Zactual = Zsurface - 0.87 * Dist^2 / DiamEarth
+% Max dz = Dist^2 / DiamEarth (m) = f * Dist / DiamEarth (px)
+De = 12740000; % m
+dist = [0:1:20] * 1e3; % m
+dz_m = dist .^ 2 ./ De % m
+dz_px = mean(images(1).cam.f) .* (dist ./ De) % px
+plot(dist, dz_m, 'k-', dist, dz_px, 'r-')

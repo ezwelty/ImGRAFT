@@ -370,7 +370,7 @@ classdef camera
       patch(corner_xyz(:, 1), corner_xyz(:, 2), corner_xyz(:, 3), color, 'FaceAlpha', 0.5);
     end
 
-    function h = plotDistortion(cam, scale)
+    function plotDistortion(cam, scale)
       if nargin < 2
         scale = 1;
       end
@@ -379,7 +379,7 @@ classdef camera
       v = (0:du:cam.imgsz(2)) + 0.5;
       [pu pv] = meshgrid(u, v);
       P0 = [pu(:) pv(:)]; P1 = camera2image(cam.idealize, cam.image2camera(P0));
-      h = plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
+      plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
       quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
       set(gca, 'xlim', cam.imgsz(1) * [-0.1 1.1], 'ylim', cam.imgsz(2) * [-0.1 1.1], 'ydir', 'reverse');
       axis equal; hold off;
@@ -600,6 +600,7 @@ classdef camera
     function [e, d] = projerror_nearest(cam, xyz, uv, ray_directions)
       if size(xyz, 1) == 0 || size(uv, 1) == 0
         e = [];
+        d = [];
         return
       end
       if nargin < 4
@@ -677,7 +678,7 @@ classdef camera
       end
     end
 
-    function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams, lxyz, luv)
+    function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams, lxyz, luv, dmax)
 
       % Enforce defaults
       if nargin < 5
@@ -686,6 +687,9 @@ classdef camera
       if nargin < 7
         lxyz = [];
         luv = [];
+      end
+      if nargin < 8
+        dmax = [];
       end
 
       % Convert inputs to cell arrays
@@ -744,31 +748,35 @@ classdef camera
           % d = reshape(cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false)), [], 1);
           d = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
         else
-          % dmax = 5;
           % dp = cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false));
           % dl = cell2mat(cellfun(@projerror_nearest, newcams, lxyz, luv, 'UniformOutput', false));
           dp = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
           dl = cell2mat(cellfun(@projdist_nearest, newcams, lxyz, luv, 'UniformOutput', false));
           % dl(sqrt(sum(dl.^2, 2)) > dmax, :) = sqrt(dmax^2 / 2);
-          % dl(dl > dmax) = dmax;
           d = [dp; dl];
           % d = sum(sum(d.^2, 2));
           % d = sign(d) .* (abs(d) > dmax);
           % d = [dp; dl];
           % d = sum(sqrt(sum(d.^2, 2)) > dmax);
         end
+        if ~isempty(dmax)
+          dl(dl > dmax) = dmax;
+        end
         d = reshape(d, [], 1);
       end
       m0 = zeros(n_fix + sum(n_flex), 1);
+      % xyz, viewdir, imgsz, f, c, k
+      % xtol = [5 5 5, 180 180 180, 100 100, 100 100, 100, 100, ];
       % HACK: Attempts to find a stable solution by reducing XTol incrementally
-      xtols = 2:-1:-7;
-      [mbest, ssq0] = LMFnlsq(@df, m0, 'XTol', 10 ^ xtols(1));
-      for xtol = xtols(2:end)
-        [mbest, ssq] = LMFnlsq(@df, mbest, 'XTol', 10 ^ xtol);
-        if abs(ssq - ssq0) < 1e-2
-          break
-        end
-      end
+      % xtols = 2:-1:-7;
+      % [mbest, ssq0] = LMFnlsq(@df, m0, 'XTol', 10 ^ xtols(1));
+      % for xtol = xtols(2:end)
+      %   [mbest, ssq] = LMFnlsq(@df, mbest, 'XTol', 10 ^ xtol);
+      %   if abs(ssq - ssq0) < 1e-2
+      %     break
+      %   end
+      % end
+      [mbest, ssq] = LMFnlsq(@df, m0);
 
       % Compile results
       newcams = camera.updateCams(mbest, cams, flexparams, fixparams);
