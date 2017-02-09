@@ -318,16 +318,18 @@ has_nan = any(isnan(Vb), 2);
 out_of_bounds = Vb(:, 1) < gsmdem.min(1) | Vb(:, 1) > gsmdem.max(1) | Vb(:, 2) < gsmdem.min(2) | Vb(:, 2) > gsmdem.max(2);
 Vb(has_nan | out_of_bounds, :) = [];
 % gsmdem.plot(2); hold on; quiver(Vb(:, 1), Vb(:, 2), Vb(:, 3), Vb(:, 4));
-gpts = nan(size(Vb, 1), 3);
+gpts0 = nan(size(Vb, 1), 3);
 for i = 1:size(gpts, 1)
-  gpts(i, :) = gsmdem.sample(Vb(i, 1:2));
+  gpts0(i, :) = gsmdem.sample(Vb(i, 1:2));
 end
-[Xi, infront] = images(1).cam.project(gpts);
-gpts2 = images(1).cam.invproject(Xi, gsmdem);
+[Xi, infront] = images(1).cam.project(gpts0);
+inframe = images(1).cam.inframe(Xi);
+gpts1 = images(1).cam.invproject(Xi, gsmdem);
 % plot(gpts(:, 1), gpts(:, 2), 'ko', gpts2(:, 1), gpts2(:, 2), 'r*')
-d = sqrt(sum((gpts2 - gpts).^2, 2));
-Vb(d > 1, :) = [];
-gpts(d > 1, :) = [];
+d = sqrt(sum((gpts1 - gpts0).^2, 2));
+valid = d < 1 & infront & inframe;
+Vb = Vb(valid, :);
+gpts = gpts0(valid, :);
 % gsmdem.plot(2); hold on; plot(gpts(:, 1), gpts(:, 2), 'y.')
 
 %% Velocities
