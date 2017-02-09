@@ -4,7 +4,7 @@
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
 project_root = fullfile('ezw', 'AK10_20090825');
-data_root = fullfile('/', 'volumes', 'science-b', 'data', 'columbia');
+data_root = fullfile('/', 'volumes', 'science', 'data', 'columbia');
 
 %% Load images
 c = camera('xyz', [499211.336 6783755.954 478.96], 'viewdir', [-165 -10 -4]);
@@ -185,9 +185,10 @@ for i = find(~is_anchor)
   i0 = find(strcmp(images(i).anchor, image_paths));
   I0 = imread(images(i0).path);
   I = imread(images(i).path);
+
   % Generate grid of points in land polygons
   % FIXME: Pre-process anchor images first?
-  gdu = 100; gdv = 100;
+  gdu = 50; gdv = 50;
   mpu = []; mpv = []; mdu = []; mdv = [];
   for j = 1:length(images(i0).land)
     u = min(images(i0).land{j}(:, 1)):gdu:max(images(i0).land{j}(:, 1));
@@ -196,36 +197,37 @@ for i = find(~is_anchor)
     % FIXME: Remove points too close to edge?
     [in on] = inpolygon(pu, pv, images(i0).land{j}(:, 1), images(i0).land{j}(:, 2));
     pu = pu(in & ~on); pv = pv(in & ~on);
-    [du, dv] = templatematch(I0, I, pu, pv, 'templatewidth', gdu / 2, 'searchwidth', gdu);
+    [du, dv] = templatematch(I0, I, pu, pv, 'templatewidth', gdu, 'searchwidth', 4 * gdu);
     mpu = [mpu ; pu]; mpv = [mpv ; pv]; mdu = [mdu ; du]; mdv = [mdv ; dv];
   end
+
   % % Plot matches
   % figure
   % imshow(I0 / 1.5); hold on;
-  % s = 10; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
+  % s = 2; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
+
   % Filter matches with RANSAC Fundamental Matrix
   nonans = ~(isnan(mdu) | isnan(mdv));
   mpu = mpu(nonans); mpv = mpv(nonans);
   mdu = mdu(nonans); mdv = mdv(nonans);
   A = images(i0).cam.image2camera([mpu, mpv]);
   B = images(i0).cam.image2camera([mpu + mdu, mpv + mdv]);
-  [F, inliersF] = ransacfitfundmatrix(A', B', 0.00000005); % TODO: tricky to set threshold (re-express in pixels?)
+  [F, inliersF] = ransacfitfundmatrix(A', B', 0.0000005); % TODO: tricky to set threshold (re-express in pixels?)
   % [H, inliersH] = ransacfithomography(A', B', 0.00000005); % TODO: tricky to set threshold (re-express in pixels?)
+
   % % Plot filtered matches
   % figure
   % imshow(I0 / 1.5); hold on;
-  % s = 100; quiver(mpu(inliersF), mpv(inliersF), s * mdu(inliersF), s * mdv(inliersF), 0, 'y')
+  % s = 2; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'r')
+  % s = 2; quiver(mpu(inliersF), mpv(inliersF), s * mdu(inliersF), s * mdv(inliersF), 0, 'y')
   % % s = 100; quiver(mpu(inliersH), mpv(inliersH), s * mdu(inliersH), s * mdv(inliersH), 0, 'y')
+
   % Orient image
   [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersF), mpv(inliersF)], [mpu(inliersF) + mdu(inliersF), mpv(inliersF) + mdv(inliersF)]);
   % [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersH), mpv(inliersH)], [mpu(inliersH) + mdu(inliersH), mpv(inliersH) + mdv(inliersH)])
   rmse(i) = fit.rmse;
   images(i).cam = newcam;
-  % Transform glacier polygons
-  images(i).glacier = {};
-  for j = 1:length(images(i0).glacier)
-    images(i).glacier{j} = images(i).cam.project(images(i0).cam.invproject(images(i0).glacier{j}), true);
-  end
+
   % % Plot transformed traces
   % figure()
   % imshow(I / 1.5), hold on
@@ -237,9 +239,34 @@ for i = find(~is_anchor)
   %   puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.coast.(j{1})), true);
   %   plot(puv(:, 1), puv(:, 2), 'r-')
   % end
+
+  % Transform glacier polygons
+  images(i).glacier = {};
+  for j = 1:length(images(i0).glacier)
+    images(i).glacier{j} = images(i).cam.project(images(i0).cam.invproject(images(i0).glacier{j}), true);
+    % plot(images(i).glacier{j}(:, 1), images(i).glacier{j}(:, 2), 'b-')
+  end
 end
 
-%% Glacier points
+%% Visualize motion correction
+i0 = find(is_anchor, 1);
+scale = 0.2;
+cam0 = images(i0).cam.resize(scale);
+[x0, y0] = meshgrid(1:cam0.imgsz(1), 1:cam0.imgsz(2));
+Xi0 = [x0(:), y0(:)];
+imwrite(imresize(rgb2gray(imread(images(i0).path)), flip(cam0.imgsz)), [num2str(i0) '-anchor.jpg']);
+for i = find(~is_anchor)
+  cam = images(i).cam.resize(scale);
+  % Project reference grid to new image
+  Xi = cam.project(cam0.invproject(Xi0), true);
+  % Interpolate image at points
+  I = imresize(rgb2gray(imread(images(i).path)), flip(cam.imgsz));
+  Zi = interp2(double(I), Xi(:, 1), Xi(:, 2));
+  I0 = uint8(reshape(Zi, flip(cam0.imgsz)));
+  imwrite(I0, [num2str(i) '.jpg']);
+end
+
+%% Glacier points (v1)
 i = find(is_anchor, 1);
 gxyz = images(i).cam.invproject(images(i).glacier{1}, gsmdem);
 gxyz(any(isnan(gxyz), 2), :) = [];
@@ -281,11 +308,33 @@ for j = 1:length(images(i0).glacier)
 end
 gpts = images(i0).cam.invproject(p0, gsmdem);
 
+% (v3: benchmark locations)
+V = importdata(fullfile(project_root, '20090803_20090827_100m.tab'));
+% x0, y0, x1, x2 | v (m/day), h (degrees cw from north)
+% Vb = [V.data(:, 1) - V.data(:, 3) / 2, V.data(:, 2) - V.data(:, 4) / 2, V.data(:, 1) + V.data(:, 3) / 2, V.data(:, 2) + V.data(:, 4) / 2, V.data(:, 8), V.data(:, 9)];
+% cx, cy | vx, vy (m/day) | h (degrees cw from north)
+Vb = [V.data(:, 1:2), V.data(:, 5:6), V.data(:, 9)];
+has_nan = any(isnan(Vb), 2);
+out_of_bounds = Vb(:, 1) < gsmdem.min(1) | Vb(:, 1) > gsmdem.max(1) | Vb(:, 2) < gsmdem.min(2) | Vb(:, 2) > gsmdem.max(2);
+Vb(has_nan | out_of_bounds, :) = [];
+% gsmdem.plot(2); hold on; quiver(Vb(:, 1), Vb(:, 2), Vb(:, 3), Vb(:, 4));
+gpts = nan(size(Vb, 1), 3);
+for i = 1:size(gpts, 1)
+  gpts(i, :) = gsmdem.sample(Vb(i, 1:2));
+end
+[Xi, infront] = images(1).cam.project(gpts);
+gpts2 = images(1).cam.invproject(Xi, gsmdem);
+% plot(gpts(:, 1), gpts(:, 2), 'ko', gpts2(:, 1), gpts2(:, 2), 'r*')
+d = sqrt(sum((gpts2 - gpts).^2, 2));
+Vb(d > 1, :) = [];
+gpts(d > 1, :) = [];
+% gsmdem.plot(2); hold on; plot(gpts(:, 1), gpts(:, 2), 'y.')
+
 %% Velocities
-i_start = i0;
+i_start = 1;
 Mi = {images(i_start).cam.project(gpts)};
 Mw = {gpts};
-for i0 = i_start%:length(images)
+for i0 = i_start:(length(images) - 1)
   i = i0 + 1;
   I0 = imread(images(i0).path);
   I = imread(images(i).path);
@@ -317,6 +366,7 @@ for i0 = i_start%:length(images)
   % s = 5; quiver(gpts(:, 1), gpts(:, 2), s * (pXw(:, 1) - gpts(:, 1)), s * (pXw(:, 2) - gpts(:, 2)), 0, 'r');
 end
 
+%% Test Camera-World conversion
 [ortho, ref] = geotiffread(fullfile(data_root, 'ortho', '2002 Aerometric', '20090827_2m.tif'));
 
 Xi = nan(1, 3);
@@ -350,16 +400,56 @@ Xi = images(i_start).cam.project(Xw);
 %% Compute average vector for each point
 V = load(fullfile(data_root, 'velocity', '_yushin', 'airborne', '20090803_20090827_GRD.mat'));
 V = V.GRD;
+vx0 = repmat(V.Xm, size(V.Ym, 1), 1); vx0 = vx0(:);
+vy0 = repmat(V.Ym, 1, size(V.Xm, 2)); vy0 = vy0(:);
+dvx = V.Gdxx(:);
+dvy = V.Gdyy(:);
+vx1 = vx0 + dvx;
+vy1 = vy0 + dvy;
+has_nan = isnan(vx0) | isnan(vy0) | isnan(vx1) | isnan(vy1);
+out_of_bounds = vx0 < gsmdem.min(1) | vx0 > gsmdem.max(1) | vy0 < gsmdem.min(2) | vy0 > gsmdem.max(2) | vx1 < gsmdem.min(1) | vx1 > gsmdem.max(1) | vy1 < gsmdem.min(2) | vy1 > gsmdem.max(2);
+vx0(has_nan | out_of_bounds) = [];
+vy0(has_nan | out_of_bounds) = [];
+vx1(has_nan | out_of_bounds) = [];
+vy1(has_nan | out_of_bounds) = [];
+X0 = nan(length(vx0), 3);
+X1 = X0;
+for i = 1:size(X0, 1)
+  X0(i, :) = gsmdem.sample([vx0(i) vy0(i)]);
+  X1(i, :) = gsmdem.sample([vx1(i) vy1(i)]);
+end
+p0 = images(i_start).cam.project(X0);
+p1 = images(i_start).cam.project(X1);
 %
-w = reshape(cell2mat(Mw), [size(gpts, 1), 3, length(Mw)]);
+w = reshape(cell2mat(Mw(1:13)), [size(gpts, 1), 3, length(Mw) - 1]);
 dw = bsxfun(@minus, w, w(:, :, 1));
 dwm = nanmedian(dw(:, :, 2:end), 3);
+%
+im = reshape(cell2mat(Mi(1:13)), [size(gpts, 1), 2, length(Mi) - 1]);
+dim = bsxfun(@minus, im, im(:, :, 1));
+dimm = nanmedian(dim(:, :, 2:end), 3);
 %
 figure
 gsmdem.plot(2); hold on;
 s = 5; quiver(repmat(V.Xm, size(V.Ym, 1), 1), repmat(V.Ym, 1, size(V.Xm, 2)), s * V.Gdxx, s * V.Gdyy, 0, 'k');
 s = 5; quiver(gpts(:, 1), gpts(:, 2), s * dwm(:, 1), s * dwm(:, 2), 0, 'r');
 j = find(abs(s * dwm(:, 1) - -24.95) < 1e-1 & abs(s * dwm(:, 2) - 54.4) < 1e-1);
+%
+figure
+imshow(imread(images(i_start).path) / 1.25); hold on
+s = 3;
+% plot(Mi{1}(:, 1), Mi{1}(:, 2), 'g*');
+% for i = 2:length(Mi)
+%   quiver(Mi{i - 1}(:, 1), Mi{i - 1}(:, 2), s * (Mi{i}(:, 1) - Mi{i - 1}(:, 1)), s * (Mi{i}(:, 2) - Mi{i - 1}(:, 2)), 0, 'r');
+%   quiver(Mi{i - 1}(j, 1), Mi{i - 1}(j, 2), s * (Mi{i}(j, 1) - Mi{i - 1}(j, 1)), s * (Mi{i}(j, 2) - Mi{i - 1}(j, 2)), 0, 'y');
+% end
+quiver(Mi{1}(:, 1), Mi{2}(:, 1), s * dimm(:, 1), s * dimm(:, 2), 0, 'r')
+quiver(p0(:, 1), p0(:, 2), s * (p1(:, 1) - p0(:, 1)), s * (p1(:, 2) - p0(:, 2)), 0, 'g');
+
+s = 5; quiver(repmat(V.Xm, size(V.Ym, 1), 1), repmat(V.Ym, 1, size(V.Xm, 2)), s * V.Gdxx, s * V.Gdyy, 0, 'k');
+s = 5; quiver(gpts(:, 1), gpts(:, 2), s * dwm(:, 1), s * dwm(:, 2), 0, 'r');
+j = find(abs(s * dwm(:, 1) - -24.95) < 1e-1 & abs(s * dwm(:, 2) - 54.4) < 1e-1);
+
 
 % % previous results
 % w = reshape(cell2mat(oldMw), [size(gpts, 1), 3, length(oldMw)]);
