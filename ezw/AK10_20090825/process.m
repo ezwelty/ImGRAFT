@@ -1,14 +1,17 @@
 %%% AK10_20090825
 
-% /applications/matlab_r2016b.app/bin/matlab -display :0.0 -nodesktop -display :0.0 -nodesktop
+% /applications/matlab_r2016b.app/bin/matlab -display :0.0 -nodesktop
 cd ~/sites/ImGRAFT/
 addpath(genpath('.'))
-project_root = fullfile('ezw', 'AK10_20090825');
+project_root = fullfile('demos', 'AK10_20090825');
 data_root = fullfile('/', 'volumes', 'science', 'data', 'columbia');
 
 %% Load images
-c = camera('xyz', [499211.336 6783755.954 478.96], 'viewdir', [-165 -10 -4]);
 img_files = dir(fullfile(project_root, 'images', '*.JPG'));
+
+cam_text = fileread(fullfile(project_root, 'camera'))
+c = camera('xyz', [499211.336 6783755.954 478.96], 'viewdir', [-165 -10 -4]);
+
 img_paths = arrayfun(@(f) fullfile(f.folder, f.name), img_files, 'UniformOutput', false);
 images = loadimages(img_paths, c);
 
