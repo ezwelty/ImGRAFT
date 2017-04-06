@@ -1,9 +1,4 @@
-
-
 repoexclude/
-demos/*.zip
-demos/*/
-
 
 # Windows image file caches
 Thumbs.db
