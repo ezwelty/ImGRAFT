@@ -59,7 +59,7 @@ classdef Image
     function images = Image(files, cam)
     % IMAGE  Construct a new Image object.
     %
-    %   img = Image(files[, cam])
+    %   img = Image(files, cam = Camera())
     %
     % Image size, sensor size, and focal length are loaded from the file
     % unless overloaded by cam.
@@ -244,23 +244,27 @@ classdef Image
 
     % Image read
     
-    function I = read(img)
+    function I = read(img, scale)
     % READ Read image data from file.
     % 
-    %   I = img.read()
+    %   I = img.read(scale = img.scale)
     % 
-    % If set, the image data is resized according to the scale property.
+    % Inputs:
+    %   scale - Scale factor for resizing the result
       
       persistent cached_I cached_scale
-      if ~isempty(cached_I) && isequal(img.scale, cached_scale)
+      if nargin < 2
+        scale = img.scale;
+      end
+      if ~isempty(cached_I) && isequal(scale, cached_scale)
         I = cached_I;
       else
         I = imread(img.file);
-        if ~isempty(img.scale) && img.scale ~= 1
-          I = imresize(I, img.scale);
+        if ~isempty(scale) && scale ~= 1
+          I = imresize(I, scale);
         end
         cached_I = I;
-        cached_scale = img.scale;
+        cached_scale = scale;
       end
     end
   
