@@ -1,95 +1,138 @@
 classdef Image
-  % Image Photographic image data structure
+  % IMAGE Photographic image data structure.
   %
   % Image Properties:
-  % imgsz    - Size of image in pixels [nx|ncols|width, ny|nrows|height]
-  % f        - Focal length in pixels [fx, fy]
-  % c        - Camera center coordinates in pixels [cx, cy]
-  % k        - Radial distortion coefficients [k1, ..., k6]
-  % p        - Tangential distortion coefficients [p1, p2]
-  % xyz      - Camera position in world coordinates [x, y, z]
-  % viewdir  - Camera view direction in degrees [yaw, pitch, roll]
-  %            yaw: clockwise rotation about z-axis (0 = look north)
-  %            pitch: rotation from horizon (+ look up, - look down)
-  %            roll: rotation about optical axis (+ down right, - down left, from behind)
-  % sensorsz - Size of camera sensor in mm [width, height] (optional)
+  % cam      - Camera object
+  %
+  % Image Properties (read-only):
+  % info     - File information from imfinfo
+  % file     - Path to image file
+  % date_str - Capture date and time as a string ('yyyy-mm-dd HH:MM:SS.FFF')
+  % date_num - Cature date and time as a serial date number
+  % shutter  - Shutter speed in seconds
+  % aperture - Lens aperture
+  % iso      - Film speed
+  % ev       - Exposure value
+  % gps      - GPS metadata
+  % size     - Size of original image [nx|ncols|width, ny|nrows|height]
   %
   % Image Properties (dependent):
-  % fullmodel - Vector containing all 20 camera parameters
-  %             [xyz(1:3), imgsz(1:2), viewdir(1:3), f(1:2), c(1:2), k(1:6), p(1:2)]
-  % fmm       - Focal length in mm [fx, fy] (not set unless sensorsz is defined)
-  % R         - Rotation matrix corresponding to camera view direction (read-only)
-  % K         - Camera matrix [fx 0 cx; 0 fy cy; 0 0 1] (read-only)
+  % scale    - Scaling between original and camera image size
   %
   % Image Methods:
-  % Image      - Construct a new Image
+  % Image - Construct a new Image object
+  % read  - Read image data from file
+  %
+  % Image Methods (static):
+  % clear_all - Clear function caches of all Image objects
+  %
+  % See also imfinfo, datestr, datenum
 
   properties
-    info
     cam
   end
 
-  properties (Dependent)
+  properties (SetAccess = private)
+    info
+  end
+
+  properties (Dependent, SetAccess = private)
     file
-    datestr
-    datenum
+    date_str
+    date_num
     shutter
     aperture
     iso
     ev
     gps
+    size
+  end
+    
+  properties (Dependent)
+    scale
   end
 
   methods
 
     % Image creation
+    
+    function images = Image(files, cam)
+      % IMAGE  Construct a new Image object.
+      %
+      %   img = Image(files[, cam])
+      %
+      % Image size, sensor size, and focal length are loaded from the file
+      % unless overloaded by cam.
+      %
+      % Inputs:
+      %   file - Path to image file
+      %   cam  - Camera object
 
-    function img = Image(filename, cam)
-      if nargin > 1 && class(cam) ~= 'camera'
-        error('Not an object of class camera.');
+      % Check inputs
+      if nargin < 1
+        return
       end
-      % Metadata
-      img.info = imfinfo(filename);
-      % Image size in pixels [nx, ny]
-      if nargin > 1
-        if isempty(cam.imgsz)
-          imgcam = cam;
-          imgcam.imgsz = [img.info.Width img.info.Height];
+      if isempty(files)
+        temp = Image();
+        images = temp(false);
+        return
+      end
+      if ~isa(files, 'cell')
+        files = {files};
+      end
+      if nargin < 2
+        cam = Camera();
+      end
+      if nargin > 1 && ~isa(cam, 'Camera')
+        error('Not an object of class Camera.');
+      end
+      % Expand paths
+      files = cellfun(@expand_path, files, 'UniformOutput', false);
+      files = [files{:}];
+      % Preallocate array
+      images(length(files)) = Image();
+      for i = 1:length(files)
+        images(i) = foreach(images(i), files{i}, cam);
+      end
+      % For each file
+      function img = foreach(img, file, cam)
+        % Metadata
+        img.info = imfinfo(file);
+        % Camera
+        img.cam = cam;
+        % Image size in pixels [nx, ny]
+        if isempty(img.cam.imgsz)
+          img.cam.imgsz = [img.info.Width, img.info.Height];
         else
-          imgcam = cam.resize([img.info.Width img.info.Height]);
+          % Check that target size is compatible with image size
+          Camera.getScaleFromSize([img.info.Width, img.info.Height], img.cam.imgsz);
         end
-      else
-        imgcam = camera('imgsz', [img.info.Width img.info.Height]);
-      end
-      % Sensor size [mm width, mm height]
-      if isempty(imgcam.sensorsz)
-        if isfield(img.info, {'Make', 'Model'})
-          imgcam.sensorsz = sensorSize(img.info.Make, img.info.Model);
+        % Sensor size [mm width, mm height]
+        if isempty(img.cam.sensorsz) && all(isfield(img.info, {'Make', 'Model'}))
+          img.cam.sensorsz = Camera.sensorSize(img.info.Make, img.info.Model);
         end
-      end
-      % Focal length in mm (if f not already set)
-      if ~isempty(imgcam.sensorsz) && isempty(imgcam.f)
-        if isfield(img.info.DigitalCamera, 'FocalLength')
-          imgcam.fmm = img.info.DigitalCamera.FocalLength;
-        elseif isfield(img.info.DigitalCamera, 'FocalLengthIn35mmFilm')
-          % FIXME: Convert to true focal length using sensor size?
-          imgcam.fmm = img.info.DigitalCamera.FocalLengthIn35mmFilm;
-          warning('True focal length not found, using 35mm equivalent.');
+        % Focal length in mm (if not already set in pixels)
+        if ~isempty(img.cam.sensorsz) && isempty(img.cam.f)
+          if isfield(img.info.DigitalCamera, 'FocalLength')
+            img.cam.fmm = img.info.DigitalCamera.FocalLength;
+          elseif isfield(img.info.DigitalCamera, 'FocalLengthIn35mmFilm')
+            % FIXME: Convert to true focal length using sensor size?
+            img.cam.fmm = img.info.DigitalCamera.FocalLengthIn35mmFilm;
+            warning('True focal length not found, using 35mm equivalent.');
+          end
         end
       end
-      % Camera
-      img.cam = imgcam;
     end
-
-    % Image properties
 
     function value = get.file(img)
       value = img.info.Filename;
     end
 
-    function value = get.datestr(img)
+    function value = get.date_str(img)
       if isfield(img.info.DigitalCamera, 'DateTimeOriginal')
-        value = deblank(img.info.DigitalCamera.DateTimeOriginal);
+        date_time = strsplit(deblank(img.info.DigitalCamera.DateTimeOriginal), ' ');
+        date_time{1} = strrep(date_time{1}, ':', '-');
+        value = [date_time{1} ' ' date_time{2}];
         if isfield(img.info.DigitalCamera, 'SubsecTimeOriginal')
           value = [value '.' deblank(strtrim(img.info.DigitalCamera.SubsecTimeOriginal))];
         elseif isfield(img.info.DigitalCamera, 'SubsecTime')
@@ -100,8 +143,12 @@ classdef Image
       end
     end
 
-    function value = get.datenum(img)
-      value = datenum(img.datestr, 'yyyy:mm:dd HH:MM:SS.FFF');
+    function value = get.date_num(img)
+      format = 'yyyy-mm-dd HH:MM:SS';
+      if ~isempty(strfind(img.date_str, '.'))
+        format = [format '.FFF'];
+      end
+      value = datenum(img.date_str, format);
     end
 
     function value = get.shutter(img)
@@ -171,16 +218,63 @@ classdef Image
         end
       end
     end
-
-    % Image read
-
-    function I = read(img)
-      I = imread(img.file);
+    
+    function value = get.size(img)
+      value = [img.info.Width, img.info.Height];
+    end
+    
+    function value = get.scale(img)
+      if isempty(img.cam.imgsz)
+        value = [];
+      else
+        value = Camera.getScaleFromSize(img.size, img.cam.imgsz);
+      end
+    end
+    
+    function img = set.scale(img, value)
+      if isempty(img.scale)
+        img.cam.imgsz = value * img.size;
+      else
+        img.cam = img.cam.resize(img.size);
+        if value ~= 1
+          img.cam = img.cam.resize(value);
+        end
+      end
     end
 
+    % Image read
+    
+    function I = read(img)
+      % READ Read image data from file.
+      % 
+      %   I = img.imread()
+      % 
+      % If set, the image data is resized according to the scale property.
+      
+      persistent cached_I cached_scale
+      if ~isempty(cached_I) && isequal(img.scale, cached_scale)
+        I = cached_I;
+      else
+        I = imread(img.file);
+        if ~isempty(img.scale) && img.scale ~= 1
+          I = imresize(I, img.scale);
+        end
+        cached_I = I;
+        cached_scale = img.scale;
+      end
+    end
+  
   end % methods
 
   methods (Static)
+    
+    function clear_all()
+      % CLEAR_ALL Clear function caches of all Image objects.
+      % 
+      %   Image.clear_all()
+      
+      clear Image;
+    end
 
   end % methods (Static)
 
