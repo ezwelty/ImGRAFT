@@ -1,4 +1,4 @@
-classdef Image
+classdef Image < handle
 % IMAGE Photographic image data structure.
 %
 % Image Properties:
@@ -21,10 +21,8 @@ classdef Image
 %
 % Image Methods:
 % Image - Construct a new Image object
-% read  - Read image data from file
-%
-% Image Methods (static):
-% clear_all - Clear function caches of all Image objects
+% read  - Read image data from file (cached)
+% clear - Clear image data
 %
 % See also imfinfo, datestr, datenum
 
@@ -51,7 +49,11 @@ classdef Image
   properties (Dependent)
     scale
   end
-
+  
+  properties (SetAccess = private, Hidden = true)
+    cached_I
+  end
+  
   methods
 
     % Image creation
@@ -231,14 +233,18 @@ classdef Image
       end
     end
     
-    function img = set.scale(img, value)
-      if isempty(img.scale)
+    function set.scale(img, value)
+      old_scale = img.scale;
+      if isempty(old_scale)
         img.cam.imgsz = value * img.size;
       else
         img.cam = img.cam.resize(img.size);
         if value ~= 1
           img.cam = img.cam.resize(value);
         end
+      end
+      if ~isequal(old_scale, value)
+        img.clear();
       end
     end
 
@@ -251,34 +257,34 @@ classdef Image
     % 
     % Inputs:
     %   scale - Scale factor for resizing the result
-      
-      persistent cached_I cached_scale
+    
       if nargin < 2
         scale = img.scale;
       end
-      if ~isempty(cached_I) && isequal(scale, cached_scale)
-        I = cached_I;
-      else
+      if isempty(img.cached_I) || scale ~= img.scale
         I = imread(img.file);
         if ~isempty(scale) && scale ~= 1
           I = imresize(I, scale);
         end
-        cached_I = I;
-        cached_scale = scale;
+        if scale == img.scale
+          img.cached_I = I;
+        end
+      else
+        I = img.cached_I;
       end
+    end
+    
+    function clear(img)
+    % CLEAR Clear image data.
+    % 
+    %   img.clear()
+    
+      img.cached_I = [];
     end
   
   end % methods
 
   methods (Static)
-    
-    function clear_all()
-    % CLEAR_ALL Clear function caches of all Image objects.
-    % 
-    %   Image.clear_all()
-      
-      clear Image;
-    end
 
   end % methods (Static)
 
