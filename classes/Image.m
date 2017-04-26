@@ -1,32 +1,32 @@
 classdef Image
-  % IMAGE Photographic image data structure.
-  %
-  % Image Properties:
-  % cam      - Camera object
-  %
-  % Image Properties (read-only):
-  % info     - File information from imfinfo
-  % file     - Path to image file
-  % date_str - Capture date and time as a string ('yyyy-mm-dd HH:MM:SS.FFF')
-  % date_num - Cature date and time as a serial date number
-  % shutter  - Shutter speed in seconds
-  % aperture - Lens aperture
-  % iso      - Film speed
-  % ev       - Exposure value
-  % gps      - GPS metadata
-  % size     - Size of original image [nx|ncols|width, ny|nrows|height]
-  %
-  % Image Properties (dependent):
-  % scale    - Scaling between original and camera image size
-  %
-  % Image Methods:
-  % Image - Construct a new Image object
-  % read  - Read image data from file
-  %
-  % Image Methods (static):
-  % clear_all - Clear function caches of all Image objects
-  %
-  % See also imfinfo, datestr, datenum
+% IMAGE Photographic image data structure.
+%
+% Image Properties:
+% cam      - Camera object
+%
+% Image Properties (read-only):
+% info     - File information from imfinfo
+% file     - Path to image file
+% date_str - Capture date and time as a string ('yyyy-mm-dd HH:MM:SS.FFF')
+% date_num - Cature date and time as a serial date number
+% shutter  - Shutter speed in seconds
+% aperture - Lens aperture
+% iso      - Film speed
+% ev       - Exposure value
+% gps      - GPS metadata
+% size     - Size of original image [nx|ncols|width, ny|nrows|height]
+%
+% Image Properties (dependent):
+% scale    - Scaling between original and camera image size
+%
+% Image Methods:
+% Image - Construct a new Image object
+% read  - Read image data from file
+%
+% Image Methods (static):
+% clear_all - Clear function caches of all Image objects
+%
+% See also imfinfo, datestr, datenum
 
   properties
     cam
@@ -57,16 +57,16 @@ classdef Image
     % Image creation
     
     function images = Image(files, cam)
-      % IMAGE  Construct a new Image object.
-      %
-      %   img = Image(files[, cam])
-      %
-      % Image size, sensor size, and focal length are loaded from the file
-      % unless overloaded by cam.
-      %
-      % Inputs:
-      %   file - Path to image file
-      %   cam  - Camera object
+    % IMAGE  Construct a new Image object.
+    %
+    %   img = Image(files[, cam])
+    %
+    % Image size, sensor size, and focal length are loaded from the file
+    % unless overloaded by cam.
+    %
+    % Inputs:
+    %   file - Path to image file
+    %   cam  - Camera object
 
       % Check inputs
       if nargin < 1
@@ -245,11 +245,11 @@ classdef Image
     % Image read
     
     function I = read(img)
-      % READ Read image data from file.
-      % 
-      %   I = img.imread()
-      % 
-      % If set, the image data is resized according to the scale property.
+    % READ Read image data from file.
+    % 
+    %   I = img.read()
+    % 
+    % If set, the image data is resized according to the scale property.
       
       persistent cached_I cached_scale
       if ~isempty(cached_I) && isequal(img.scale, cached_scale)
@@ -269,9 +269,9 @@ classdef Image
   methods (Static)
     
     function clear_all()
-      % CLEAR_ALL Clear function caches of all Image objects.
-      % 
-      %   Image.clear_all()
+    % CLEAR_ALL Clear function caches of all Image objects.
+    % 
+    %   Image.clear_all()
       
       clear Image;
     end
