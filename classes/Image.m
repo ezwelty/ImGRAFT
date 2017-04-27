@@ -21,8 +21,10 @@ classdef Image < handle
 %
 % Image Methods:
 % Image - Construct a new Image object
-% read  - Read image data from file (cached)
-% clear - Clear image data
+%
+% Image Methods (cached):
+% read  - Read image data from file
+% clear - Clear object cache
 %
 % See also imfinfo, datestr, datenum
 
@@ -275,7 +277,7 @@ classdef Image < handle
     end
     
     function clear(img)
-    % CLEAR Clear image data.
+    % CLEAR Clear object cache.
     % 
     %   img.clear()
     
