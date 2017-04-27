@@ -1,5 +1,5 @@
-classdef camera
-  % camera Distorted camera model
+classdef Camera
+  % CAMERA Distorted camera model.
   %
   % This class is an implementation of the distorted camera model used by OpenCV:
   % http://docs.opencv.org/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html
@@ -10,53 +10,35 @@ classdef camera
   % the image extends from [0.5, 0.5] to [nx + 0.5, ny + 0.5] and the center is
   % at [(nx + 1) / 2, (ny + 1) / 2].
   %
-  % camera Properties:
-  % imgsz    - Size of image in pixels [nx|ncols|width, ny|nrows|height]
-  % f        - Focal length in pixels [fx, fy]
-  % c        - Camera center coordinates in pixels [cx, cy]
-  % k        - Radial distortion coefficients [k1, ..., k6]
-  % p        - Tangential distortion coefficients [p1, p2]
-  % xyz      - Camera position in world coordinates [x, y, z]
-  % viewdir  - Camera view direction in degrees [yaw, pitch, roll]
+  % Camera Properties:
+  % xyz      - Position in world coordinates [x, y, z]
+  % viewdir  - View direction in degrees [yaw, pitch, roll]
   %            yaw: clockwise rotation about z-axis (0 = look north)
   %            pitch: rotation from horizon (+ look up, - look down)
   %            roll: rotation about optical axis (+ down right, - down left, from behind)
-  % sensorsz - Size of camera sensor in mm [width, height] (optional)
+  % f        - Focal length in pixels [fx, fy]
+  % c        - Principal point coordinates in pixels [cx, cy]
+  % k        - Radial distortion coefficients [k1, ..., k6]
+  % p        - Tangential distortion coefficients [p1, p2]
+  % imgsz    - Image size in pixels [nx|ncols|width, ny|nrows|height]
+  % sensorsz - Sensor size in mm [width, height] (optional)
   %
-  % camera Properties (dependent):
-  % fullmodel - Vector containing all 20 camera parameters
+  % Camera Properties (dependent):
+  % fullmodel - Vector of all 20 camera parameters
   %             [xyz(1:3), imgsz(1:2), viewdir(1:3), f(1:2), c(1:2), k(1:6), p(1:2)]
+  % R         - Rotation matrix corresponding to the view direction (read-only)
   % fmm       - Focal length in mm [fx, fy] (not set unless sensorsz is defined)
-  % R         - Rotation matrix corresponding to camera view direction (read-only)
-  % K         - Camera matrix [fx 0 cx; 0 fy cy; 0 0 1] (read-only)
   %
-  % camera Methods:
-  % camera      - Construct a new camera object
+  % Camera Methods:
+  % Camera      - Construct a new Camera object
   % project     - Project world coordinates to image coordinates (3D -> 2D)
   % invproject  - Project image coordinates to world coordinates (2D -> 3D)
   % optimizecam - Optimize camera parameters to mimimize the distance between
   %               projected world coordinates and their expected image coordinates
+  % sensorSize  - Lookup sensor size by camera make and model
   %
   % ImGRAFT - An image georectification and feature tracking toolbox for MATLAB
-  % Copyright (C) 2014 Aslak Grinsted (<www.glaciology.net glaciology.net>)
-
-  % Permission is hereby granted, free of charge, to any person obtaining a copy
-  % of this software and associated documentation files (the "Software"), to deal
-  % in the Software without restriction, including without limitation the rights
-  % to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-  % copies of the Software, and to permit persons to whom the Software is
-  % furnished to do so, subject to the following conditions:
-  %
-  % The above copyright notice and this permission notice shall be included in
-  % all copies or substantial portions of the Software.
-  %
-  % THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-  % IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-  % FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-  % AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-  % LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-  % OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-  % THE SOFTWARE.
+  % Copyright (C) 2014 Aslak Grinsted (https://glaciology.net/)
 
   properties
     xyz
@@ -70,9 +52,9 @@ classdef camera
   end
 
   properties (Dependent)
+    fullmodel
     R
     fmm
-    fullmodel
     framebox
     framepoly
   end
@@ -81,8 +63,8 @@ classdef camera
 
     % Camera creation
 
-    function cam = camera(varargin)
-      % CAMERA  Construct a new camera object.
+    function cam = Camera(varargin)
+      % CAMERA Construct a new camera object.
       %
       % There are several ways to call this method -
       %
@@ -272,10 +254,11 @@ classdef camera
       end
     end
 
-    function cam = resize(cam, scale)
+    function cam = resize(cam, scale, parameters)
       % RESIZE  Resize a camera image.
       %
       %   cam = cam.resize(scale)
+      %   cam = cam.resize(imgsz)
       %
       % The focal length (f) and principal point (c) are adjusted as needed to
       % account for the change in image size (imgsz).
@@ -285,25 +268,24 @@ classdef camera
       % this function may be non-reversible.
       %
       % Inputs:
-      %   scale - Scale factor [s] or desired image size [nx|ncols, ny|nrows]
+      %   scale - Scale factor
+      %   imgsz - Desired image size [nx|ncols, ny|nrows]
 
+      % Calculate scale [x, y]
       if length(scale) > 1
-        imgsz1 = round(scale(1:2));
-        scale = imgsz1 ./ cam.imgsz;
-        if any(abs(diff(scale)) * cam.imgsz > 1)
-          error(['Aspect ratio of target image size (' num2str(imgsz1(1) / imgsz1(2), 2) ') too different from original (' num2str(cam.imgsz(1) / cam.imgsz(2), 2) ') to be accounted for by rounding.']);
-        end
-      else
-        imgsz1 = round(scale * cam.imgsz);
-        scale = imgsz1 ./ cam.imgsz;
+        scale = Camera.getScaleFromSize(cam.imgsz, scale);
       end
-      f = cam.f .* flip(scale);
-      c = ((imgsz1 + 1) / 2) + (cam.c - ((cam.imgsz + 1) / 2)) .* flip(scale);
+      target_size = round(scale * cam.imgsz);
+      scale = target_size ./ cam.imgsz;
+      % Apply scale to parameters
+      % FIXME: What other rescaling is necessary?
+      f = cam.f .* scale;
+      c = ((target_size + 1) / 2) + (cam.c - ((cam.imgsz + 1) / 2)) .* scale;
       % Save to new object
       cam = cam;
       cam.f = f;
       cam.c = c;
-      cam.imgsz = imgsz1;
+      cam.imgsz = target_size;
     end
 
     function cam = idealize(cam)
@@ -543,34 +525,34 @@ classdef camera
       [newcam, fit] = camera.optimizeCams(cam, xyz, uv, freeparams);
       newcam = newcam{1};
     end
-
-    function [newcam, fit] = optimizeR(cam, uv, uv2, angles)
-      % Enforce defaults
-      if nargin < 4
-        angles = 1:3;
-      end
-      % Convert to ray directions
-      dxyz = cam.invproject(uv);
-      % Set up error function
-      flexparams = camera.parseFreeparams({'viewdir', angles});
-      fixparams = camera.parseFreeparams({});
-      ray_direction = true;
-      ef = @(d) reshape(projerror(camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
-      % Optimize
-      [d, rss] = LMFnlsq(ef, zeros(length(angles), 1));
-      % Compile results
-      newcam = camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
-      k = length(angles);
-      n = size(uv, 1);
-      fit = struct();
-      fit.rmse = sqrt(rss ./ n);
-      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
-      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
-      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
-      fit.aic = n .* log(rss ./ n) + 2 * k * (n / (n - k - 1));
-      fit.bic = n .* log(rss ./ n) + 2 * k * log(n);
-      % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
-    end
+    %
+    % function [newcam, fit] = optimizeR(cam, uv, uv2, angles)
+    %   % Enforce defaults
+    %   if nargin < 4
+    %     angles = 1:3;
+    %   end
+    %   % Convert to ray directions
+    %   dxyz = cam.invproject(uv);
+    %   % Set up error function
+    %   flexparams = camera.parseFreeparams({'viewdir', angles});
+    %   fixparams = camera.parseFreeparams({});
+    %   ray_direction = true;
+    %   ef = @(d) reshape(projerror(camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
+    %   % Optimize
+    %   [d, rss] = LMFnlsq(ef, zeros(length(angles), 1));
+    %   % Compile results
+    %   newcam = camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
+    %   k = length(angles);
+    %   n = size(uv, 1);
+    %   fit = struct();
+    %   fit.rmse = sqrt(rss ./ n);
+    %   % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
+    %   % AIC small sample correction: http://brianomeara.info/tutorials/aic/
+    %   % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
+    %   fit.aic = n .* log(rss ./ n) + 2 * k * (n / (n - k - 1));
+    %   fit.bic = n .* log(rss ./ n) + 2 * k * log(n);
+    %   % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
+    % end
 
     function e = projerror(cam, xyz, uv, ray_directions)
       if size(xyz, 1) == 0 || size(uv, 1) == 0
@@ -816,7 +798,66 @@ classdef camera
       end
     end
 
-  end
+    function scale = getScaleFromSize(original_size, target_size)
+      original_size = round(original_size);
+      target_size = round(target_size);
+      if all(original_size == target_size)
+        scale = 1;
+        return
+      end
+      scale_bounds = target_size ./ original_size;
+      error_function = @(scale) sum(abs(round(original_size * scale) - target_size));
+      [scale, value] = fminbnd(error_function, min(scale_bounds), max(scale_bounds));
+      if value > 0
+        error('No scale can achieve the target size.');
+      end
+    end
+
+    function sensorsz = sensorSize(varargin)
+      % SENSORSIZE Get the sensor size of a digital camera model.
+      %
+      %   sensorsz = sensorSize(makemodel)
+      %   sensorsz = sensorSize(make, model)
+      %
+      % Returns the CCD sensor width and height in mm for the specified camera.
+      % Data is from Digital Photography Review (https://dpreview.com).
+      % See also https://www.dpreview.com/articles/8095816568/sensorsizes.
+      %
+      % Inputs:
+      %   makemodel - Camera make and model [make ' ' model]
+      %   make      - Camera make
+      %   model     - Camera model
+      %
+      % Outputs:
+      %   sensorsz - sensor size in mm [width, height]
+
+      % Check inputs
+      if nargin < 1
+        error('Specify make & model of camera.')
+      end
+      if nargin > 1
+        makemodel = [deblank(strtrim(varargin{1})) ' ' deblank(strtrim(varargin{2}))];
+      end
+
+      % Load sensor sizes (mm)
+      sensor_sizes = {
+        'NIKON CORPORATION NIKON D2X', [23.7 15.7]; % https://www.dpreview.com/reviews/nikond2x/2
+        'NIKON CORPORATION NIKON D200', [23.6 15.8]; % https://www.dpreview.com/reviews/nikond200/2
+      };
+
+      % Check for match
+      match = find(strcmp(makemodel, sensor_sizes(:, 1)));
+
+      % If match found, return sensor size
+      if ~isempty(match)
+        sensorsz = sensor_sizes{match, 2};
+      else
+        warning(['No sensor size found for "' makemodel '". Returning [].']);
+        sensorsz = [];
+      end
+    end
+
+  end % methods (Static)
 
   methods (Access = private)
 

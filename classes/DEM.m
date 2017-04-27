@@ -1,52 +1,43 @@
-% TODO: horizon – Reshape inputs as needed
-% TODO: horizon – Skip check of z-intersection
-% TODO: voxelviewshed – move to DEM model
-% TODO: Add copy method
-
 classdef DEM < handle
-  % DEM Digital elevation model
-  %
-  % This model implements a regularly gridded digital elevation model. Read-only
-  % properties are cached for efficiency and updated only when needed. Hidden
-  % properties are cached and only computed when requested.
+  % DEM Digital elevation model.
   %
   % DEM Properties:
-  % Z    - Grid of values on a regular xy grid
-  % xlim - Outer bounds of the grid in x [left, right]
-  % ylim - Outer bounds of the grid in y [top, bottom]
+  % Z     - Grid of values on a regular xy grid
+  % xlim  - Outer bounds of the grid in x [left, right]
+  % ylim  - Outer bounds of the grid in y [top, bottom]
   %
   % DEM Properties (read-only):
-  % min   - Minimum corner of bounding box [min(x), min(y), min(z)]
-  % max   - Maximum corner of bounding box [max(x), max(y), max(z)]
-  % nx,ny - Dimensions of grid
-  % dx,dy - Cell size in x and y
-  %
-  % DEM Properties (read-only and hidden):
-  % x,y   - Cell center coordinates as row vectors [left to right], [top to bottom]
-  % X,Y   - Cell center coordinates as grids, equivalent to meshgrid(x, y)
+  % nx,ny - Dimensions of grid [size(Z, 2)], [size(Z, 1)]
+  % dx,dy - Grid cell size [range(x) / nx], [range(y) / ny]
   %
   % DEM Methods:
   % DEM    - Construct a new DEM object
-  % crop   - Crop a DEM to new x, y, and z boundaries
-  % resize - Resize a DEM by a given scale factor and interpolaton method
+  % crop   - Return a cropped DEM
+  % resize - Return a resized DEM
   % plot   - Plot a DEM as a hillshade in 2D or 3D
-
-  properties
-    xlim = [0 3];
-    ylim = [3 0];
-    Z = zeros(3);
-  end
-
+  %
+  % DEM Methods (cached):
+  % zlim   - Outer bounds of Z [min(Z), max(Z)]
+  % x,y    - Cell center coordinates as row vectors [left to right], [top to bottom]
+  % X,Y    - Cell center coordinates as grids, equivalent to meshgrid(x, y)
+  % clear  - Clear object cache
+  
   properties (SetAccess = private)
+    Z
+    xlim
+    ylim
+  end
+  
+  properties (Dependent, SetAccess = private)
     nx, ny
     dx, dy
-    min, max
   end
 
-  properties (SetAccess = private, Hidden = true, GetObservable)
-    x, y
-    X, Y
-    tin
+  properties (SetAccess = private, Hidden = true)
+    cached_zlim
+    cached_x, cached_y
+    cached_X, cached_Y
+    cached_tin
   end
 
   methods
@@ -58,84 +49,224 @@ classdef DEM < handle
       %   dem = DEM(Z, x, y)
       %   dem = DEM(Z, X, Y)
       %
-      % Constructs a DEM object from a grid of elevations and either the outer
-      % x,y limits of the grid (xlim, ylim) or vectors (x, y) or grids (X, Y) of
-      % cell center coordinates. x,y must be monotonic and evenly spaced, and
-      % X,Y must be equivalent to meshgrid(x, y).
+      % Inputs: 
+      %   Z         - Grid of elevations
+      %   xlim,ylim - Outer x,y limis of the grid [left, right], [top, bottom]
+      %   x,y       - Cell center coordinate vectors [left to right], [top to bottom]
+      %               Monotonic and evenly spaced
+      %   X,Y       - Cell center coordinate grids
+      %               Equivalent to meshgrid(x, y)
       %
-      % Assumes that Z and x,y outer boundaries are supplied such that:
+      % Assumes that Z and x,y coordinates are supplied such that:
       % left   @  xlim(1)  , x(1)  , or X(1, 1)
       % right  @  xlim(end), x(end), or X(1, end)
       % top    @  ylim(1)  , y(1)  , or Y(1, 1)
       % bottom @  ylim(end), y(end), or Y(end, 1)
       %
-      % See also: meshgrid, DEM.parseZ, DEM.parseXlim, DEM.parseYlim
+      % See also meshgrid
 
-      % ()
-      if nargin == 0
-        dem = dem.updateXYZ;
+      if nargin < 1
+        return
       end
-      % (Z)
-      if nargin == 1
-        dem.Z = DEM.parseZ(varargin{1});
+      dem.Z = varargin{1};
+      if nargin < 2
         dem.xlim = [0 size(dem.Z, 2)];
+      else
+        dem.xlim = varargin{2};
+      end
+      if nargin < 3
         dem.ylim = [size(dem.Z, 1) 0];
-        dem = dem.updateXYZ;
-      end
-      % (Z, xlim, ylim)
-      % (Z, x, y)
-      % (Z, X, Y)
-      if nargin == 3
-        dem.Z = DEM.parseZ(varargin{1});
-        [dem.xlim, x, X] = DEM.parseXlim(varargin{2});
-        [dem.ylim, y, Y] = DEM.parseYlim(varargin{3});
-        dem = dem.updateX(x, X).updateY(y, Y).updateZ;
-      end
-
-      % Add listeners
-      addlistener(dem, 'x', 'PreGet', @dem.PreGetProperty);
-      addlistener(dem, 'y', 'PreGet', @dem.PreGetProperty);
-      addlistener(dem, 'X', 'PreGet', @dem.PreGetProperty);
-      addlistener(dem, 'Y', 'PreGet', @dem.PreGetProperty);
-      addlistener(dem, 'tin', 'PreGet', @dem.PreGetProperty);
-    end
-
-    function PreGetProperty(dem, property, varargin)
-      if isempty(dem.(property.Name))
-        dem = dem.(['compute_' property.Name]);
+      else
+        dem.ylim = varargin{3};
       end
     end
 
-    % Independent properties
-
-    function dem = set.xlim(dem, value)
-      value = DEM.parseXlim(value);
-      if any(value ~= dem.xlim)
-        dem.xlim = value;
-        dem = dem.updateX;
+    function set.Z(dem, value)
+      if isempty(value) || ~isnumeric(value)
+        error('Value must be non-empty and numeric.')
       end
-    end
-
-    function dem = set.ylim(dem, value)
-      value = DEM.parseYlim(value);
-      if any(value ~= dem.ylim)
-        dem.ylim = value;
-        dem = dem.updateY;
+      if size(value, 3) > 1
+        warning('Dimensions greater than 2 currently not supported. Using first 2D layer.')
+        value = value(:, :, 1);
       end
-    end
-
-    function dem = set.Z(dem, value)
-      value = DEM.parseZ(value);
       dem.Z = value;
-      if size(dem.Z, 2) ~= dem.nx, dem = dem.updateX; end
-      if size(dem.Z, 1) ~= dem.ny, dem = dem.updateY; end
-      dem = dem.updateZ;
+    end
+    
+    function set.xlim(dem, value)
+      dem.xlim = dem.parse_xlim(value);
+    end
+    
+    function xlim = parse_xlim(dem, value)
+      if isempty(value) || ~isnumeric(value)
+        error('Value must be non-empty and numeric.');
+      end
+      x = [];
+      X = [];
+      isgrid = all(size(value) > 1);
+      isvector = ~isgrid && any(size(value) > 2);
+      if isgrid
+        if any(value(1, 1) ~= value(:, 1))
+          error('X does not have all equal rows.');
+        end
+        if nargout > 2
+          X = value;
+        end
+        value = value(1, :);
+      end
+      if size(value, 1) > 1
+        value = reshape(value, 1, length(value));
+      end
+      if isgrid || isvector
+        d = diff(value);
+        if any(d(1) ~= d)
+          error('x is not equally spaced monotonic.');
+        end
+        if nargout > 1
+          x = value;
+        end
+        xlim = [value(1) - diff(value(1:2)) / 2, value(end) + diff(value(end-1:end)) / 2];
+      else
+        xlim = value;
+      end
+      dem.cached_x = x;
+      dem.cached_X = X;
+    end
+
+    function set.ylim(dem, value)
+      dem.ylim = dem.parse_ylim(value);
+    end
+    
+    function ylim = parse_ylim(dem, value)
+      if isempty(value) || ~isnumeric(value)
+        error('Value must be non-empty and numeric.');
+      end
+      y = []; Y = [];
+      isgrid = all(size(value) > 1);
+      isvector = ~isgrid && any(size(value) > 2);
+      if isgrid
+        if any(value(1, 1) ~= value(1, :))
+          error('Y does not have all equal rows.');
+        end
+        if nargout > 2
+          Y = value;
+        end
+        value = value(:, 1);
+      end
+      if size(value, 1) > 1
+        value = reshape(value, 1, length(value));
+      end
+      if isgrid || isvector
+        d = diff(value);
+        if any(d(1) ~= d)
+          error('y is not equally spaced monotonic.');
+        end
+        if nargout > 1
+          y = value;
+        end
+        ylim = [value(1) - diff(value(1:2)) / 2, value(end) + diff(value(end-1:end)) / 2];
+      else
+        ylim = value;
+      end
+      dem.cached_y = y;
+      dem.cached_Y = Y;
+    end
+    
+    function value = get.nx(dem)
+     value = size(dem.Z, 2);
+    end
+    
+    function value = get.ny(dem)
+     value = size(dem.Z, 1);
+    end
+    
+    function value = get.dx(dem)
+      value = abs(diff(dem.xlim)) / dem.nx;
+    end
+    
+    function value = get.dy(dem)
+      value = abs(diff(dem.ylim)) / dem.ny;
+    end
+    
+    function value = zlim(dem)
+      if isempty(dem.cached_zlim)
+        value = [min(min(dem.Z)), max(max(dem.Z))];
+        dem.cached_zlim = value;
+      else
+        value = dem.cached_zlim;
+      end
+    end
+    
+    function value = x(dem)
+      if isempty(dem.cached_x)
+        value = (min(dem.xlim) + dem.dx / 2):dem.dx:(max(dem.xlim) - dem.dx / 2);
+        if dem.xlim(1) > dem.xlim(2)
+          value = fliplr(value);
+        end
+        dem.cached_x = value;
+      else
+        value = dem.cached_x;
+      end
+    end
+    
+    function value = y(dem)
+      if isempty(dem.cached_y)
+        value = (min(dem.ylim) + dem.dy / 2):dem.dy:(max(dem.ylim) - dem.dy / 2);
+        if dem.ylim(1) > dem.ylim(2)
+          value = fliplr(value);
+        end
+        dem.cached_y = value;
+      else
+        value = dem.cached_y;
+      end
+    end
+    
+    function value = X(dem)
+      if isempty(dem.cached_X)
+        value = repmat(dem.x, size(dem.Z, 1), 1);
+        dem.cached_X = value;
+      else
+        value = dem.cached_X;
+      end
+    end
+    
+    function value = Y(dem)
+      if isempty(dem.cached_Y)
+        value = repmat(dem.y', 1, size(dem.Z, 2));
+        dem.cached_Y = value;
+      else
+        value = dem.cached_Y;
+      end
+    end
+    
+    function value = tin(dem)
+      if isempty(dem.cached_tin)
+        % --- Compute cell z min & max z ---
+        zming = ordfilt2(dem.Z, 1, ones(2, 2));
+        zmaxg = ordfilt2(dem.Z, 4, ones(2, 2));
+        % Strip padded rows and columns
+        zming = zming(1:(end - 1), 1:(end - 1));
+        zmaxg = zmaxg(1:(end - 1), 1:(end - 1));
+        % Trim boundaries to outer center coordinates
+        tin_xlim = dem.x([1, end]);
+        tin_ylim = dem.y([1, end]);
+        % Build offset DEMs
+        zmin = DEM(zming, tin_xlim, tin_ylim);
+        zmax = DEM(zmaxg, tin_xlim, tin_ylim);
+        % --- Build offset DEMs ---
+        tin = struct();
+        tin.zmin = zmin;
+        tin.zmax = zmax;
+        value = tin;
+        dem.cached_tin = value;
+      else
+        value = dem.cached_tin;
+      end
     end
 
     function dem = crop(dem, xlim, ylim, zlim)
-      % CROP  Crop a DEM.
+      % CROP Return a cropped DEM.
       %
-      %   dem = dem.crop(xlim, ylim = [], zlim = [])
+      %   dem = dem.crop(xlim = dem.xlim, ylim = dem.ylim, zlim = dem.zlim)
       %
       % Crops a DEM to the specified x, y, and z limits. Includes cells
       % intersected by the boundary (rather than resampling the DEM to conform
@@ -146,125 +277,112 @@ classdef DEM < handle
       %   ylim - y crop boundaries
       %   zlim - z crop boundaries
 
-      % Check xlim
-      if isempty(xlim)
-        % Use existing xlim
+      % --- Crop xlim ---
+      if nargin < 2 || isempty(xlim)
         xlim = dem.xlim;
-        mincol = 1;
-        maxcol = dem.nx;
       else
-        % Parse custom xlim
-        xlim = DEM.parseXlim(xlim);
-        if sign(diff(xlim)) ~= sign(diff(dem.xlim)), xlim = flip(xlim); end
-        % Fit to current limits
-        dx1 = sign(xlim - dem.xlim(1)); dx2 = sign(xlim - dem.xlim(2));
-        % No overlap: if both points are on same side of both limits
-        if isequal(dx1(1), dx1(2), dx2(1), dx2(2))
+        xlim = range_intersection(sort(dem.xlim), sort(xlim));
+        if range(xlim) == 0 || any(size(xlim) == 0)
           error('Crop bounds do not intersect DEM.')
         end
-        % Beyond current limits: if either point same side of both limits
-        xbeyond = dx1 == dx2;
-        xlim(xbeyond) = dem.xlim(xbeyond);
-        % Convert limits to column indices
-        mincol = floor(abs(xlim(1) - dem.xlim(1)) / dem.dx) + 1;
-        maxcol = ceil(abs(xlim(2) - dem.xlim(1)) / dem.dx);
-      end
-
-      % Check ylim
+        if sign(diff(xlim)) ~= sign(diff(dem.xlim))
+          xlim = flip(xlim);
+        end
+      end 
+      % --- Crop ylim ---
       if nargin < 3 || isempty(ylim)
-        % Use existing ylim
         ylim = dem.ylim;
-        minrow = 1;
-        maxrow = dem.ny;
       else
-        % Parse custom ylim
-        ylim = DEM.parseYlim(ylim);
-        if sign(diff(ylim)) ~= sign(diff(dem.ylim)), ylim = flip(ylim); end
-        % Fit to current limits
-        dy1 = sign(ylim - dem.ylim(1)); dy2 = sign(ylim - dem.ylim(2));
-        % No overlap: if both points are on same side of both limits
-        if isequal(dy1(1), dy1(2), dy2(1), dy2(2))
+        ylim = range_intersection(sort(dem.ylim), sort(ylim));
+        if range(ylim) == 0 || any(size(ylim) == 0)
           error('Crop bounds do not intersect DEM.')
         end
-        % Beyond current limits: if either point same side of both limits
-        ybeyond = dy1 == dy2;
-        ylim(ybeyond) = dem.ylim(ybeyond);
-        % Convert limits to row indices
-        minrow = floor(abs(ylim(1) - dem.ylim(1)) / dem.dy) + 1;
-        maxrow = ceil(abs(ylim(2) - dem.ylim(1)) / dem.dy);
+        if sign(diff(ylim)) ~= sign(diff(dem.ylim))
+          ylim = flip(ylim);
+        end
       end
-
-      % Perform clip
-      cZ = dem.Z(minrow:maxrow, mincol:maxcol);
-      cxlim = interp1([0 dem.nx], dem.xlim, [mincol - 1 maxcol]);
-      cylim = interp1([0 dem.ny], dem.ylim, [minrow - 1 maxrow]);
-
-      % Check zlim
+      % --- Convert limits to grid indices ---
+      mincol = floor(abs(xlim(1) - dem.xlim(1)) / dem.dx) + 1;
+      maxcol = ceil(abs(xlim(2) - dem.xlim(1)) / dem.dx);
+      minrow = floor(abs(ylim(1) - dem.ylim(1)) / dem.dy) + 1;
+      maxrow = ceil(abs(ylim(2) - dem.ylim(1)) / dem.dy);
+      % --- Crop xy ---
+      z = dem.Z(minrow:maxrow, mincol:maxcol);
+      xlim = interp1([0 dem.nx], dem.xlim, [mincol - 1, maxcol]);
+      ylim = interp1([0 dem.ny], dem.ylim, [minrow - 1, maxrow]);
+      % --- Crop z ---
       if nargin > 3 && ~isempty(zlim)
-        % Set values outside range to NaN
-        cZ(cZ > max(zlim) | cZ < min(zlim)) = NaN;
+        z(z > max(zlim) | z < min(zlim)) = NaN;
       end
-
-      % Create clipped DEM
-      dem = DEM(cZ, cxlim, cylim);
+      % --- Return cropped DEM ---
+      dem = DEM(z, xlim, ylim);
     end
 
     function dem = resize(dem, scale, method)
-      % RESIZE  Resize a DEM.
+      % RESIZE Return a resized DEM.
       %
       %   dem = dem.resize(scale, method = 'bicubic')
+      %   dem = dem.resize(size, method = 'bicubic')
       %
       % Resamples a DEM grid by the specified scale factor and interpolation
-      % method. The cell size is changed, but grid xy boundaries remain the same.
+      % method. Cell size is changed, but xy boundaries remain the same.
       %
       % Inputs:
-      %   scale  - Scale factor [s] or [srows, scols], or output size [nrows, ncols]
-      %   method - Interpolation method passed to imresize
+      %   scale  - Scale factor
+      %   size   - Target grid size [nx, ny]
+      %   method - Interpolation method, passed to imresize
       %
-      % See also: imresize
-
+      % See also imresize
+      
+      % --- Check inputs ---
       if nargin < 3
         method = 'bicubic';
       end
-
-      % Scale grid
-      Z = imresize(dem.Z, scale, method);
-      dem = DEM(Z, dem.xlim, dem.ylim);
+      % --- Resize grid ---
+      z = imresize(dem.Z, flip(scale), method);
+      % --- Return resized DEM ---
+      dem = DEM(z, dem.xlim, dem.ylim);
     end
 
     function h = plot(dem, dim, shade)
-      % PLOT  Plot a DEM in 2 or 3 dimensions.
+      % PLOT Plot a DEM.
       %
-      %   h = dem.plot(dim)
+      %   h = dem.plot(dim = 2, shade - hillshade(dem.Z, dem.x, dem.y))
       %
-      % Plots a DEM at the specified scale in either 2 or 3 dimensions.
+      % Plots a DEM in either 2 or 3 dimensions with a custom overlay.
       %
       % Inputs:
-      %   dim - Dimension of plot (2 or 3)
+      %   dim   - Dimension of plot (2 or 3)
+      %   shade - Custom shading image, same size as dem.Z
       %
       % Outputs:
-      %   h   - Figure handle
+      %   h - Figure handle
+      % 
+      % See also imagesc, surf, hillshade
 
-      % Force scaling of large DEM for 3D plotting
+      % --- Choose dimension ---
+      if nargin < 2
+        dim = 2;
+      end
+      % --- Resize large DEM ---
       if (dem.nx * dem.ny > 2e6)
         scale = sqrt(2e6 / (dem.nx * dem.ny));
         dem = dem.resize(scale);
-        if (nargin > 2)
+        if nargin > 2
           shade = imresize(shade, scale);
         end
-        warning('DEM automatically downsized for fast plotting')
+        warning('DEM automatically downsized for faster plotting');
       end
-
-      % Plot DEM
-      if (nargin < 3)
+      % --- Plot DEM ---
+      if nargin < 3
         shade = hillshade(dem.Z, dem.x, dem.y);
       end
-      if (dim == 2)
+      if dim == 2
         h = imagesc(dem.x, dem.y, shade);
         axis image
         set(gca, 'ydir', 'normal')
-      elseif (dim == 3)
-        h = surf(dem.x, dem.y, dem.Z, double(shade), 'EdgeColor','none');
+      elseif dim == 3
+        h = surf(dem.x, dem.y', dem.Z, double(shade), 'EdgeColor', 'none');
         shading interp
         axis equal
       end
@@ -351,14 +469,6 @@ classdef DEM < handle
           voxy = max(voxy, interp1q(xx, yy, voxx));
       end
       vis = reshape(vis, [dem.ny dem.nx]);
-    end
-
-    function [zmin, zmax] = tingrids(dem)
-      zmin = ordfilt2(dem.Z, 1, ones(2,2));
-      zmax = ordfilt2(dem.Z, 4, ones(2,2));
-      % Strip padded row and column
-      zmin = zmin(1:(end - 1), 1:(end - 1));
-      zmax = zmax(1:(end - 1), 1:(end - 1));
     end
 
     function X = sample(dem, origin, direction, first, xy0, r0)
@@ -548,151 +658,9 @@ classdef DEM < handle
 
   methods (Static)
 
-    function [xlim, x, X] = parseXlim(value)
-      if (isempty(value) || ~isnumeric(value)), error('value must be non-empty and numeric'); end
-      if nargout > 1, x = []; X = []; end
-      isgrid = all(size(value) > 1);
-      isvector = ~isgrid && any(size(value) > 2);
-      if isgrid
-        if any(value(1, 1) ~= value(:, 1)), error('X does not have all equal rows'); end
-        if nargout > 2, X = value; end
-        value = value(1, :);
-      end
-      if size(value, 1) > 1
-        value = reshape(value, 1, length(value));
-      end
-      if isgrid || isvector
-        dx = diff(value);
-        if any(dx(1) ~= dx), error('x is not equally spaced monotonic'); end
-        if nargout > 1, x = value; end
-        xlim = [value(1) - diff(value(1:2)) / 2, value(end) + diff(value(end-1:end)) / 2];
-      else
-        xlim = value;
-      end
-    end
-
-    function [ylim, y, Y] = parseYlim(value)
-      if (isempty(value) || ~isnumeric(value)), error('value must be non-empty and numeric'); end
-      if nargout > 1, y = []; Y = []; end
-      isgrid = all(size(value) > 1);
-      isvector = ~isgrid && any(size(value) > 2);
-      if isgrid
-        if any(value(1, 1) ~= value(1, :)), error('Y does not have all equal rows'); end
-        if nargout > 2, Y = value; end
-        value = value(:, 1);
-      end
-      if size(value, 1) > 1
-        value = reshape(value, 1, length(value));
-      end
-      if isgrid || isvector
-        dy = diff(value);
-        if any(dy(1) ~= dy), error('y is not equally spaced monotonic'); end
-        if nargout > 1, y = value; end
-        ylim = [value(1) - diff(value(1:2)) / 2, value(end) + diff(value(end-1:end)) / 2];
-      else
-        ylim = value;
-      end
-    end
-
-    function value = parseZ(value)
-      if (isempty(value) || ~isnumeric(value)), error('value must be non-empty and numeric'); end
-      if (size(value, 3) > 1)
-        warning('3D+ Z currently not supported. Using first 2D layer.')
-        value = value(:, :, 1);
-      end
-    end
-
   end % static methods
 
   methods (Access = private)
-
-    function dem = updateXYZ(dem)
-      dem = dem.updateX.updateY.updateZ;
-    end
-
-    function dem = updateX(dem, x, X)
-      dem.min(1) = min(dem.xlim);
-      dem.max(1) = max(dem.xlim);
-      dem.nx = size(dem.Z, 2);
-      dem.dx = abs(diff(dem.xlim)) / dem.nx;
-      if nargin > 2 && ~isempty(x)
-        dem.x = x;
-      else
-        dem.x = [];
-      end
-      if nargin > 3 && ~isempty(X)
-        dem.X = X;
-      else
-        dem.X = [];
-      end
-    end
-
-    function dem = compute_x(dem)
-      dem.x = (dem.min(1) + dem.dx / 2):dem.dx:(dem.max(1) - dem.dx / 2);
-      if dem.xlim(1) > dem.xlim(2)
-        dem.x = fliplr(dem.x);
-      end
-    end
-
-    function dem = compute_X(dem)
-      dem.X = repmat(dem.x, size(dem.Z, 1), 1);
-    end
-
-    function dem = updateY(dem, y, Y)
-      dem.min(2) = min(dem.ylim);
-      dem.max(2) = max(dem.ylim);
-      dem.ny = size(dem.Z, 1);
-      dem.dy = abs(diff(dem.ylim)) / dem.ny;
-      if nargin > 2 && ~isempty(y)
-        dem.y = y;
-      else
-        dem.y = [];
-      end
-      if nargin > 3 && ~isempty(Y)
-        dem.Y = Y;
-      else
-        dem.Y = [];
-      end
-    end
-
-    function dem = compute_y(dem)
-      dem.y = (dem.min(2) + dem.dy / 2):dem.dy:(dem.max(2) - dem.dy / 2);
-      if dem.ylim(1) > dem.ylim(2)
-        dem.y = fliplr(dem.y);
-      end
-    end
-
-    function dem = compute_Y(dem)
-      dem.Y = repmat(dem.y', 1, size(dem.Z, 2));
-    end
-
-    function dem = updateZ(dem)
-      dem.min(3) = min(min(dem.Z));
-      dem.max(3) = max(max(dem.Z));
-    end
-
-    function dem = compute_tin(dem)
-
-      % Prepare TIN grids
-      [zming, zmaxg] = dem.tingrids();
-      xlim = dem.xlim + [1, -1] * (dem.dx / 2) * sign(diff(dem.xlim));
-      ylim = dem.ylim + [1, -1] * (dem.dy / 2) * sign(diff(dem.ylim));
-      zmin = DEM(zming, xlim, ylim);
-      zmax = DEM(zmaxg, xlim, ylim);
-      tin = struct();
-      tin.zmin = zming;
-      tin.zmax = zmaxg;
-      tin.nx = size(tin.zmin, 2);
-      tin.ny = size(tin.zmin, 1);
-      tin.dx = zmin.dx;
-      tin.dy = zmin.dy;
-      tin.min = [dem.min(1:2) + [dem.dx / 2, dem.dy / 2], dem.min(3)];
-      tin.max = [dem.max(1:2) - [dem.dx / 2, dem.dy / 2], dem.max(3)];
-      tin.Dzmin = zmin;
-      tin.Dzmax = zmax;
-      % Store
-      dem.tin = tin;
-    end
 
   end % private methods
 
