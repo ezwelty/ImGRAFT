@@ -8,7 +8,7 @@ IMG_PATH = fullfile(DATA_DIR, 'images', 'test', '*.JPG');
 DEM_PATH = fullfile(DATA_DIR, 'dems', '20090827_2m.tif');
 OUT_DIR = fullfile('demos', 'test');
 
-% Scalars
+% Parameters
 IMG_SCALE = 0.25;
 DEM_SCALE = 0.25;
 DEM_DISTANCE = 20e3; % m
@@ -18,8 +18,8 @@ CAM_ID = lower('AK10');
 SVG_GCP = 'gcp';
 SVG_COAST = 'coast';
 SVG_HORIZON = 'horizon';
-SVG_FIXED_AREAS = {'land'};
-SVG_MOVING_AREAS = {'glacier'};
+SVG_LAND = 'land';
+SVG_GLACIER = 'glacier';
 SVG_LINE_DENSITY = 0.10; % points per pixel
 
 % Datasets
@@ -43,6 +43,7 @@ cam = Camera('xyz', cam_xyz, 'viewdir', cam_viewdir);
 % glacier . polygon_<i> : [x1 y1; ... ; xn yn]
 % coast . polyline_<i> : [x1 y1; ... ; xn yn]
 % horizon . polyline_<i> : [x1 y1; ... ; xn yn]
+% FIXME: xmlread (for svg) very slow
 images = Image(IMG_PATH, cam);
 
 %% Format GCP (ground control points)
@@ -95,65 +96,135 @@ for i = has_lines
   images(i).gcl.xyz = [ifelse(isempty(coast), {}, COAST); ifelse(isempty(horizon), {}, HORIZON)];
 end
 
+%% Format fixed (land) and free (glacier) polygons
+for i = 1:length(images)
+  if isfield(images(i).svg, SVG_LAND)
+    for j = fieldnames(images(i).svg.(SVG_LAND))'
+      images(i).fixedpolys{end + 1} = images(i).svg.(SVG_LAND).(j{1});
+    end
+  end
+  if isfield(images(i).svg, SVG_GLACIER)
+    for j = fieldnames(images(i).svg.(SVG_GLACIER))'
+      images(i).freepolys{end + 1} = images(i).svg.(SVG_GLACIER).(j{1});
+    end
+  end
+end
+
 %% --- Calibrate anchor images ----
-is_anchor = find(arrayfun(@(img) any(isfield(img.svg, {SVG_GCP, SVG_COAST, SVG_HORIZON})), images));
 
-%% Gather calibration data
-% cams: {cam, ...}, gcp_uv: {[], ...}, gcp_xyz: {[], ...}, gcl_uv: {[], ...}, gcl_xyz: {{[], ...}, ...}
-cams = {images(is_anchor).cam};
-gcp_uv = arrayfun(@(img) img.gcp.uv, images(is_anchor), 'UniformOutput', false);
-gcp_xyz = arrayfun(@(img) img.gcp.xyz, images(is_anchor), 'UniformOutput', false);
-gcl_uv = arrayfun(@(img) img.gcl.uv, images(is_anchor), 'UniformOutput', false);
-gcl_xyz = arrayfun(@(img) img.gcl.xyz, images(is_anchor), 'UniformOutput', false);
+is_anchor = arrayfun(@(img) any(~isempty(img.gcp.xyz) & ~isempty(img.gcl.xyz)), images);
+anchor_ind = find(is_anchor);
+flexparams = {'viewdir'};
+fixparams = {'f', 'k', [1 2]};
+[anchors, fit] = Camera.optimize_images(images(is_anchor), flexparams, fixparams, 10);
 
-%% Optimize
-% FIXME: Solutions using lines are unstable!
-% Adjust xtol (see camera.optimizeCams)
-% HACK: Converge on full model:
-[newcams, fit] = Camera.optimizeCams(cams, gcp_uv, gcp_xyz, {'viewdir'})
-% [newcams, fit] = Camera.optimizeCams(cams, {[]}, {[]}, {{'viewdir'}}, {}, gcl_uv, gcl_xyz)
-% [newcams, fit] = Camera.optimizeCams(newcams, gcp_uv, gcp_xyz, {{'viewdir', 'f'}}, {}, gcl_uv, gcl_xyz)
-
-% Then, iterate as points (slow, but effective):
-% FIXME: SLOW (but effective)
-% (for best results, set dmax threshold)
-dmax = 10;
-freeparams = {{'viewdir', 'f', 'k', [1 2]}};
-freeparams = {{'viewdir'}};
-for i = 1:50
-  previous_cams = newcams;
-  previous_rmse = fit.rmse;
-  duv = newcams{1}.projerror_nearest(gcl_xyz{1}, gcl_uv{1});
-  lxyz2 = newcams{1}.xyz + newcams{1}.invproject(gcl_uv{1} + duv) * 1000;
-  [newcams, fit] = Camera.optimizeCams(newcams{1}, [gcp_uv{1}; gcl_uv{1}], [gcp_xyz{1}; lxyz2], freeparams, [], [], [], dmax)
-  % [newcams, fit] = cams{1}.optimizeR(luv{1} + duv, luv{1}), newcams = {newcams};
-  if fit.rmse > previous_rmse
-    newcams = previous_cams;
-    break
-  end
-end
-
-%% Plot results
-figure()
-for i = 1:length(newcams)
-  imshow(imread(images(is_anchor_ind(i)).path)); hold on
+% Review results
+fit
+for i = 1:length(anchors)
+  figure();
+  imshow(anchors(i).read());
+  hold on
   % Point errors
-  duv = newcams{i}.projerror(xyz{i}, uv{i});
+  duv = anchors(i).cam.projerror(uv{i}, xyz{i});
   plot(uv{i}(:, 1), uv{i}(:, 2), 'g*');
-  s = 1; quiver(uv{i}(:, 1), uv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'y');
+  s = 1; quiver(uv{i}(:, 1), uv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'r');
   % Line errors
-  plot(luv{i}(:, 1), luv{i}(:, 2), 'g*');
-  duv = newcams{i}.projerror_nearest(lxyz{i}, luv{i});
-  s = 1; quiver(luv{i}(:, 1), luv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'y');
+  plot(luv{i}(:, 1), luv{i}(:, 2), 'g.');
+  duv = anchors(i).cam.projerror_lines(luv{i}, lxyz{i});
+  s = 1; quiver(luv{i}(:, 1), luv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'r');
   for j = 1:length(lxyz{i})
-    pluv = newcams{i}.project(lxyz{i}{j});
-    plot(pluv(:, 1), pluv(:, 2), 'r-');
+    pluv = anchors(i).cam.project(lxyz{i}{j});
+    plot(pluv(:, 1), pluv(:, 2), 'y-');
   end
-  if length(newcams) > 1
-    pause();
+  title(['\fontsize{14} ', num2str(anchor_ind(i)), ': RMSE ', num2str(fit.rmse(i), '%.2f'), 'px']);
+end
+
+% Save results
+images(is_anchor) = anchors;
+
+%% --- Assign images to anchors ---
+% Match each image to the nearest (temporal) anchor.
+
+anchor_dates = [images(is_anchor).date_num];
+for i = find(~is_anchor)
+  [~, i_min] = min(abs(anchor_dates - images(i).date_num));
+  images(i).anchor = anchor_ind(i_min);
+end
+
+%% --- Calibrate images from anchors ---
+
+rmse = [];
+for i = find(~is_anchor)
+  I = images(i).read();
+  i0 = images(i).anchor;
+  I0 = images(i0).read;
+  % Generate grid of points in land polygons
+  % TODO: Move to outside loop
+  gdu = 50; gdv = 50;
+  mpu = []; mpv = []; mdu = []; mdv = [];
+  
+  for j = 1:length(images(i0).land)
+
+    [du, dv] = templatematch(I0, I, pu, pv, 'templatewidth', gdu, 'searchwidth', 4 * gdu);
+    mpu = [mpu ; pu]; mpv = [mpv ; pv]; mdu = [mdu ; du]; mdv = [mdv ; dv];
+  end
+  % Plot matches
+  figure
+  imshow(I0 / 1.5); hold on;
+  s = 2; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
+  % Filter matches with RANSAC Fundamental Matrix
+  nonans = ~(isnan(mdu) | isnan(mdv));
+  mpu = mpu(nonans); mpv = mpv(nonans);
+  mdu = mdu(nonans); mdv = mdv(nonans);
+  A = images(i0).cam.image2camera([mpu, mpv]);
+  B = images(i0).cam.image2camera([mpu + mdu, mpv + mdv]);
+  % TODO: Tricky to set threshold (re-express in pixels?)
+  [F, inliersF] = ransacfitfundmatrix(A', B', 0.0000005);
+  % [H, inliersH] = ransacfithomography(A', B', 0.00000005);
+  % Plot filtered matches
+  figure
+  imshow(I0 / 1.5); hold on;
+  s = 2; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'r')
+  s = 2; quiver(mpu(inliersF), mpv(inliersF), s * mdu(inliersF), s * mdv(inliersF), 0, 'y')
+  % s = 100; quiver(mpu(inliersH), mpv(inliersH), s * mdu(inliersH), s * mdv(inliersH), 0, 'y')
+  % Orient image
+  [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersF), mpv(inliersF)], [mpu(inliersF) + mdu(inliersF), mpv(inliersF) + mdv(inliersF)]);
+  % [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersH), mpv(inliersH)], [mpu(inliersH) + mdu(inliersH), mpv(inliersH) + mdv(inliersH)])
+  rmse(i) = fit.rmse;
+  images(i).cam = newcam;
+  % Plot transformed traces
+  figure()
+  imshow(I / 1.5), hold on
+  for j = fieldnames(images(i0).svg.horizon)'
+    puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.horizon.(j{1})), true);
+    plot(puv(:, 1), puv(:, 2), 'r-')
+  end
+  for j = fieldnames(images(i0).svg.coast)'
+    puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.coast.(j{1})), true);
+    plot(puv(:, 1), puv(:, 2), 'r-')
+  end
+  % Transform glacier polygons
+  images(i).glacier = {};
+  for j = 1:length(images(i0).glacier)
+    images(i).glacier{j} = images(i).cam.project(images(i0).cam.invproject(images(i0).glacier{j}), true);
+    % plot(images(i).glacier{j}(:, 1), images(i).glacier{j}(:, 2), 'b-')
   end
 end
-%% Save results
-for i = 1:length(newcams)
-  images(is_anchor_ind(i)).cam = newcams{i};
+
+%% Visualize motion correction
+i0 = find(is_anchor, 1);
+scale = 0.2;
+cam0 = images(i0).cam.resize(scale);
+[x0, y0] = meshgrid(1:cam0.imgsz(1), 1:cam0.imgsz(2));
+Xi0 = [x0(:), y0(:)];
+imwrite(imresize(rgb2gray(imread(images(i0).path)), flip(cam0.imgsz)), [num2str(i0) '-anchor.jpg']);
+for i = find(~is_anchor)
+  cam = images(i).cam.resize(scale);
+  % Project reference grid to new image
+  Xi = cam.project(cam0.invproject(Xi0), true);
+  % Interpolate image at points
+  I = imresize(rgb2gray(imread(images(i).path)), flip(cam.imgsz));
+  Zi = interp2(double(I), Xi(:, 1), Xi(:, 2));
+  I0 = uint8(reshape(Zi, flip(cam0.imgsz)));
+  imwrite(I0, [num2str(i) '.jpg']);
 end

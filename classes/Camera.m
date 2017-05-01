@@ -369,7 +369,7 @@ classdef Camera
         radius = [];
       end
       pyramid = cam.viewpyramid(radius);
-      value = [min(pyramid); max(pyramid)];
+      box = [min(pyramid); max(pyramid)];
     end
 
     function h = plot(cam, dim, radius, color)
@@ -459,19 +459,6 @@ classdef Camera
 
     % Transformations
 
-    function in = inframe(cam, uv)
-      % INFRAME Check whether points are in the image.
-      %
-      %   in = cam.inframe(uv)
-      %
-      % NOTE: Points on edge are considered inside.
-      %
-      % Inputs:
-      %   uv - Image coordinates [u1 v1; ...]
-
-      in = all(uv >= 0, 2) & uv(:, 1) <= cam.imgsz(1) & uv(:, 2) <= cam.imgsz(2);
-    end
-
     function in = infront(cam, xyz)
       % INFRONT Check whether points are infront of the camera.
       %
@@ -483,6 +470,33 @@ classdef Camera
       dxyz = xyz - cam.xyz;
       Xc = dxyz * cam.R';
       in = Xc(:, 3) > 0;
+    end
+
+    function [in, xy, uv] = inview(cam, xyz, directions)
+      % INVIEW Checks whether points are within the camera's view.
+      %
+      %   in = cam.inview(xyz)
+      %
+      % Inputs:
+      %   xyz - World coordinates [x1 y1 z1; ...]
+
+      if nargin < 3 || isempty(directions)
+        directions = false;
+      end
+      xy = cam.world2camera(xyz, directions);
+      uv = cam.camera2image(xy);
+      in = cam.inframe(uv);
+    end
+
+    function in = inframe(cam, uv)
+      % INFRAME Check whether points are on the image.
+      %
+      %   in = cam.inframe(uv)
+      %
+      % Inputs:
+      %   uv - Image coordinates [u1 v1; ...]
+
+      in = all(uv >= 0, 2) & uv(:, 1) <= cam.imgsz(1) & uv(:, 2) <= cam.imgsz(2);
     end
 
     function xy = image2camera(cam, uv)
@@ -635,6 +649,23 @@ classdef Camera
     end
 
     % Lines
+    function lines = clip_line_inview(cam, xyz)
+      % CLIP_LINE_INFRONT Clips a line into the segments in front of a camera.
+      %
+      %   lines = cam.clip_line_infront(xyz, intersections = true)
+      %
+      % Inputs:
+      %   xyz           - World coordinates [x1 y1 z1; ...]
+      %   intersections - Whether to insert vertices at intersections with camera plane
+      %
+      % Outputs:
+      %   lines - Line segments in front of camera {[x1 y1 z1; ...], ...}
+      %
+      % See also infront, intersectEdgePlane
+
+      in = cam.inview(xyz);
+      lines = splitmat(xyz, in);
+    end
 
     function lines = clip_line_infront(cam, xyz, intersections)
       % CLIP_LINE_INFRONT Clips a line into the segments in front of a camera.
@@ -732,26 +763,25 @@ classdef Camera
       if ~iscell(xyz)
         xyz = {xyz};
       end
-      if nargin < 4 || isempty(directions)
-        directions = false;
-      end
       pts = [];
       for i = 1:length(xyz)
-        % Clip segments in front of camera
-        lines = cam.clip_line_infront(xyz{i});
+        % Clip segments to camera view
+        [in, xy] = cam.inview(xyz{i});
+        lines = splitmat(xy, in);
         for j = 1:length(lines)
           % Project to camera
-          xy = cam.world2camera(lines{j});
+          % xy = cam.world2camera(lines{j});
           % Resample
-          % TODO: Clip to camera boundary, accounting for distortion
-          l = polylineLength(xy, 'open');
-          resampled_xy = resamplePolyline(xy, ceil(l * max(cam.f)));
+          % TODO: Use faster interpXn
+          % t = cumsum(sqrt(sum(diff(xy).^2, 2)));
+          % xy = interpXn(xy, t, 0:(t(end) / 1e3):t(end));
+          l = polylineLength(lines{j}, 'open');
+          n_pts = ceil(l * max(cam.f));
+          resampled_xy = resamplePolyline(lines{j}, n_pts);
           % Project to image
           puv = cam.camera2image(resampled_xy);
-          % Clip points inside image
-          in = cam.inframe(puv);
           % Merge as points
-          pts = vertcat(pts, puv(in, :));
+          pts = vertcat(pts, puv);
         end
       end
       if isempty(pts)
@@ -924,7 +954,7 @@ classdef Camera
       is_param = cellfun(@ischar, params);
       is_pos = cellfun(@isnumeric, params);
       for i = find(is_param)
-        is_match = strcmpi(params{i}, params);
+        is_match = strcmpi(params{i}, param_names);
         if any(is_match)
           ind = param_indices{is_match};
           if i < length(params) && is_pos(i + 1)
@@ -935,35 +965,34 @@ classdef Camera
       end
     end
 
-    function [e, d, puv] = projerror_bundle(cams, uv, xyz, luv, lxyz)
+    function [e, d, puv] = projerror_bundle(cams, uv, xyz, luv, lxyz, ldmax)
       n = numel(cams);
       [e, d, puv] = deal(cell(n, 1));
       for i = 1:n
         if ~isempty(uv{i}) && ~isempty(xyz{i})
-          e_pts = cams{i}.projerror(uv{i}, xyz{i});
+          [e{i}, d{i}] = cams{i}.projerror(uv{i}, xyz{i});
         end
         if ~isempty(luv{i}) && ~isempty(lxyz{i})
           if nargout < 2
-            e_lines = cams{i}.projerror_lines(luv{i}, lxyz{i});
+            [e_lines, d_lines] = cams{i}.projerror_lines(luv{i}, lxyz{i});
           else
-            [e_lines, puv{i}] = cams{i}.projerror_lines(luv{i}, lxyz{i});
+            [e_lines, d_lines, puv{i}] = cams{i}.projerror_lines(luv{i}, lxyz{i});
           end
-        end
-        e{i} = vertcat(e_pts, e_lines);
-        if nargout > 1
-          d{i} = sqrt(sum(e{i}.^2, 2));
+          d_lines(d_lines > ldmax) = ldmax;
+          e{i} = vertcat(e{i}, e_lines);
+          d{i} = vertcat(d{i}, d_lines);
         end
       end
     end
 
     function cams = update_bundle(params, cams, is_flexible, is_fixed)
       % params: n_fix + sum(n_flex)
-      n_flexible = sum(is_flexible, 2);
       n_fixed = sum(is_fixed);
+      n_flexible = sum(is_flexible, 2);
       % Fullmodel template
       temp = zeros(1, 20);
       temp(is_fixed) = params(1:n_fixed);
-      temp(1:n_fixed) = [];
+      params(1:n_fixed) = [];
       % Update each camera
       for i = 1:length(cams)
         model = temp;
@@ -974,330 +1003,126 @@ classdef Camera
       end
     end
 
-    function [newcams, fit] = optimize_bundle(cams, uv, xyz, luv, lxyz, flexparams, fixparams)
-      % Set free parameters
-      temp = cellfun(@Camera.select_params, flexparams, 'uniform', false);
-      is_flexible = vertcat(temp{:});
-      is_fixed = Camera.select_params(fixparams);
-      params_initial = zeros(sum(is_fixed) + sum(is_flexible(:)), 1);
-      % Optimize
-      function d = df(params)
-        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
-        [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
-      end
-      [params_final, ssq] = LMFnlsq(@df, params_initial);
-    end
-
-    function [newcams, fit] = optimize_images(images, flexparams, fixparams)
-      % Gather data
-      % cams: {cam, ...}, gcp_uv: {[], ...}, gcp_xyz: {[], ...}, gcl_uv: {[], ...}, gcl_xyz: {{[], ...}, ...}
-      cams = {images.cam};
-      uv = arrayfun(@(img) img.gcp.uv, images, 'uniform', false);
-      xyz = arrayfun(@(img) img.gcp.xyz, images, 'uniform', false);
-      luv = arrayfun(@(img) img.gcl.uv, images, 'uniform', false);
-      lxyz = arrayfun(@(img) img.gcl.xyz, images, 'uniform', false);
-      % Set free parameters
-      temp = cellfun(@Camera.select_params, flexparams, 'uniform', false);
-      is_flexible = vertcat(temp{:});
-      is_fixed = Camera.select_params(fixparams);
-      params_initial = zeros(sum(is_fixed) + sum(is_flexible(:)), 1);
-      % Optimize
-      function d = df(params)
-        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
-        [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
-        d = vertcat(d{:});
-      end
-      [params_final, ssq] = LMFnlsq(@df, params_initial)
-      % Iterate
-
-      % (for best results, set dmax threshold)
-
-      % dmax = 10;
-      % for i_cam = 1:length(cams)
-      %   cam =
-      %   function d2 = df(params)
-      %     newcams = Camera.update_bundle(params, cams, is_flexible(i, :), is_fixed);
-      %     [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
-      %     d = vertcat(d{:});
-      %   end
-      % end
-      cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
-
-      function d = df2(params)
-        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
-        [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
-        d = vertcat(d{:});
-      end
-
-      original_lxyz = lxyz;
-      for iteration = 1:50
-        for i = 1:length(cams)
-          [~, ~, puv] = cams{i}.projerror_lines(luv{i}, lxyz{i});
-          lxyz{i} = cams{i}.xyz + cams{1}.invproject(puv);
-        end
-        previous_ssq = ssq;
-        [params_final, ssq] = LMFnlsq(@df2, params_initial)
-        if ssq > previous_ssq
-          break
-        end
-      end
-
-      % Compile results
-      newcams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
-      n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
-      e = Camera.projerror_bundle(newcams, uv, xyz, luv, original_lxyz);
-      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
-      % rss = cellfun(@(x) sum(x.^2), e);
-      fit = struct();
-      fit.rmse = sqrt(rss ./ n);
-      n = sum(n);
-      k = length(params_final);
-      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
-      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
-      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
-      fit.aic = n .* log(rss ./ n) + 2 * k .* (n ./ (n - k - 1));
-      fit.bic = n .* log(rss ./ n) + 2 * k .* log(n);
-      % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
-    end
-
-    function [newcams, fit] = optimizeCams(varargin)
-      % cams, gcp, gcp, gcl_uv, gcl_xyz flexparams, fixparams
-      % cams, gcp_uv, gcp_xyz, gcl_uv, gcl_xyz flexparams, fixparams
-
+    function [newcams, fit] = optimize_bundle(varargin)
+      % cams, uv, xyz, luv, lxyz, flexparams, fixparams, ldmax
       % Convert inputs to cell arrays
-      for i = 1:4
+      for i = 1:6
         if ~iscell(varargin{i})
           varargin{i} = {varargin{i}};
         end
       end
-      varargin
       % Expand inputs
       n_cams = length(varargin{1});
-      for i = 2:4
+      for i = 2:6
         if ~rem(n_cams, length(varargin{i}))
           varargin{i} = repmat(varargin{i}, 1, n_cams / length(varargin{i}));
         end
         if n_cams ~= length(varargin{i})
-          error('Input arrays cannot be coerced to equal length')
+          error('Input arrays cannot be coerced to equal length');
         end
       end
       % Enforce defaults
-      if length(varargin) < 5
-        varargin{5} = [];
+      if length(varargin) < 7
+        varargin{7} = [];
       end
-      % Assign to variables
-      [cams, uv, xyz, flexparams, fixparams] = deal(varargin{1:5})
-      return
-      % Discard invalid points
-      for i = 1:length(xyz)
-        if size(xyz{i}, 1) > 0
-          is_valid = cams{i}.infront(xyz{i}) & ~(any(isnan(xyz{i}), 2) | any(isnan(uv{i}), 2));
-          xyz{i} = xyz{i}(is_valid, :);
-          uv{i} = uv{i}(is_valid, :);
-          if size(xyz{i}, 1) == 0
-            error(['No valid control points found for camera ' str2num(i)]);
-          end
+      if length(varargin) < 8
+        varargin{8} = Inf;
+      end
+      [cams, uv, xyz, luv, lxyz, flexparams, fixparams, ldmax] = deal(varargin{1:8});
+      % Set free parameters
+      temp = cellfun(@Camera.select_params, flexparams, 'uniform', false);
+      is_flexible = vertcat(temp{:});
+      is_fixed = Camera.select_params(fixparams);
+      params_initial = zeros(1, sum(is_fixed) + sum(is_flexible(:)));
+      % Optimize (initial)
+      fprintf('Initial...\n');
+      function e = ef(params)
+        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
+        [duv, d] = Camera.projerror_bundle(newcams, uv, xyz, {[]}, {[]}, {[]});
+        e = reshape(vertcat(duv{:}), [], 1);
+      end
+      [params_final, ssq] = LMFnlsq(@ef, params_initial);
+      cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
+      % Optimize (iterate)
+      fprintf('Refining ...         ');
+      has_lines = find(not(cellfun('isempty', luv)) & not(cellfun('isempty', lxyz)));
+      function d = ef2(params)
+        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
+        duv = Camera.projerror_bundle(newcams, uv, xyz, {[]}, {[]}, {[]});
+        e = vertcat(duv{:});
+        d = sqrt(sum(e.^2, 2));
+        d(d > ldmax) = ldmax;
+      end
+      original_uv = uv;
+      original_xyz = xyz;
+      for i = has_lines
+        uv{i} = [uv{i}; luv{i}];
+      end
+      previous_ssq = Inf;
+      for iteration = 1:50
+        previous_cams = cams;
+        for i = has_lines
+          [~, ~, puv] = cams{i}.projerror_lines(luv{i}, lxyz{i});
+          xyz{i} = [original_xyz{i}; cams{i}.xyz + cams{1}.invproject(puv)];
         end
-      end
-
-      % Initialize
-      flexparams = cellfun(@Camera.parseFreeparams, flexparams, 'UniformOutput', false);
-      fixparams = Camera.parseFreeparams(fixparams);
-      n_flex = cellfun(@sum, flexparams);
-      n_fix = sum(fixparams);
-
-      % Optimize
-      if nargin < 7
-        has_lines = false;
-      else
-        has_lines = true;
-      end
-      mxyz = cellfun(@(x, y) [mat2cell(x, ones(size(x, 1), 1)); y], xyz, lxyz, 'UniformOutput', false);
-      muv = cellfun(@(x, y) [x; y], uv, luv, 'UniformOutput', false);
-      function d = df(m)
-        newcams = Camera.updateCams(m, cams, flexparams, fixparams);
-        % d = reshape(cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false)), [], 1);
-        % dmax = 2; w = 10;
-        % d = cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false));
-        % dist = sqrt(sum(d.^2, 2));
-        % d(dist > dmax, :) = d(dist > dmax, :) * w;
-        % d = reshape(d, [], 1);
-      % end
-        if ~has_lines
-          % d = reshape(cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false)), [], 1);
-          d = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
-        else
-          % dp = cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false));
-          % dl = cell2mat(cellfun(@projerror_nearest, newcams, lxyz, luv, 'UniformOutput', false));
-          dp = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
-          dl = cell2mat(cellfun(@projdist_nearest, newcams, lxyz, luv, 'UniformOutput', false));
-          % dl(sqrt(sum(dl.^2, 2)) > dmax, :) = sqrt(dmax^2 / 2);
-          d = [dp; dl];
-          % d = sum(sum(d.^2, 2));
-          % d = sign(d) .* (abs(d) > dmax);
-          % d = [dp; dl];
-          % d = sum(sqrt(sum(d.^2, 2)) > dmax);
+        [params_final, ssq] = LMFnlsq(@ef2, params_initial);
+        cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
+        fprintf(['\b\b\b\b\b\b\b\b' num2str(ssq, '%1.2e')]);
+        if ssq >= previous_ssq
+          cams = previous_cams;
+          break
         end
-        if ~isempty(dmax)
-          dl(dl > dmax) = dmax;
-        end
-        d = reshape(d, [], 1);
+        previous_ssq = ssq;
       end
-      m0 = zeros(n_fix + sum(n_flex), 1);
-      % xyz, viewdir, imgsz, f, c, k
-      % xtol = [5 5 5, 180 180 180, 100 100, 100 100, 100, 100, ];
-      % HACK: Attempts to find a stable solution by reducing XTol incrementally
-      % xtols = 2:-1:-7;
-      % [mbest, ssq0] = LMFnlsq(@df, m0, 'XTol', 10 ^ xtols(1));
-      % for xtol = xtols(2:end)
-      %   [mbest, ssq] = LMFnlsq(@df, mbest, 'XTol', 10 ^ xtol);
-      %   if abs(ssq - ssq0) < 1e-2
-      %     break
-      %   end
-      % end
-      [mbest, ssq] = LMFnlsq(@df, m0);
-
-      % Compile results
-      newcams = Camera.updateCams(mbest, cams, flexparams, fixparams);
-      n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
-      % e = mat2cell(reshape(df(mbest), [], 2), n);
-      % e = {reshape(df(mbest), [], 2)};
-      % e = {df(mbest)};
-      e = cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false);
-      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
-      % rss = cellfun(@(x) sum(x.^2), e);
+      fprintf('\n');
+      uv = original_uv;
+      xyz = original_xyz;
+      % Model statistics
+      n = reshape(cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv), 1, []);
+      e = Camera.projerror_bundle(cams, uv, xyz, luv, lxyz, ldmax);
+      rss = reshape(cellfun(@(x) sum(sum(x.^2, 2)), e), 1, []);
       fit = struct();
       fit.rmse = sqrt(rss ./ n);
       n = sum(n);
-      k = n_fix + sum(n_flex);
+      k = length(params_final);
+      rss = sum(rss);
       % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
       % AIC small sample correction: http://brianomeara.info/tutorials/aic/
-      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
       fit.aic = n .* log(rss ./ n) + 2 * k .* (n ./ (n - k - 1));
       fit.bic = n .* log(rss ./ n) + 2 * k .* log(n);
-      % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
+      % Camera model selection: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
+      fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
     end
 
-    function [newcams, fit] = optimizeCams_old(cams, uv, xyz, flexparams, fixparams, luv, lxyz, dmax)
-
+    function [images, fit] = optimize_images(images, flexparams, fixparams, ldmax, lxyz)
       % Enforce defaults
-      if nargin < 5 || isempty(fixparams)
-        fixparams = {};
+      if nargin < 2 || isempty(flexparams)
+        flexparams = [];
       end
-      if nargin < 7
+      if nargin < 3 || isempty(fixparams)
+        fixparams = [];
+      end
+      if nargin < 4 || isempty(ldmax)
+        ldmax = Inf;
+      end
+      if nargin < 5
+        lxyz = arrayfun(@(img) img.gcl.xyz, images, 'uniform', false);
+      end
+      % Collect cameras and control from images
+      cams = {images.cam};
+      uv = arrayfun(@(img) img.gcp.uv, images, 'uniform', false);
+      xyz = arrayfun(@(img) img.gcp.xyz, images, 'uniform', false);
+      if isempty(lxyz)
         luv = [];
-        lxyz = [];
-      end
-      if nargin < 8
-        dmax = [];
-      end
-
-      % Convert inputs to cell arrays
-      convert = {'cams', 'uv', 'xyz', 'luv', 'lxyz'};
-      if ~iscell(cams), cams = {cams}; end
-      if ~iscell(uv), uv = {uv}; end
-      if ~iscell(xyz), xyz = {xyz}; end
-      if ~iscell(luv), luv = {luv}; end
-      if ~iscell(lxyz), lxyz = {lxyz}; end
-      % Expand inputs
-      n_cams = length(cams);
-      if ~rem(n_cams, length(uv)), uv = repmat(uv, 1, n_cams / length(uv)); end
-      if ~rem(n_cams, length(xyz)), xyz = repmat(xyz, 1, n_cams / length(xyz)); end
-      if ~rem(n_cams, length(luv)), luv = repmat(luv, 1, n_cams / length(luv)); end
-      if ~rem(n_cams, length(lxyz)), lxyz = repmat(lxyz, 1, n_cams / length(lxyz)); end
-      if ~rem(n_cams, length(flexparams)), flexparams = repmat(flexparams, 1, n_cams / length(flexparams)); end
-      if any(n_cams ~= [length(uv), length(xyz), length(flexparams), length(luv), length(lxyz)])
-        error('Input arrays cannot be coerced to equal length')
-      end
-
-      % Discard invalid points
-      for i = 1:length(xyz)
-        if size(xyz{i}, 1) > 0
-          is_valid = cams{i}.infront(xyz{i}) & ~(any(isnan(xyz{i}), 2) | any(isnan(uv{i}), 2));
-          xyz{i} = xyz{i}(is_valid, :);
-          uv{i} = uv{i}(is_valid, :);
-          if size(xyz{i}, 1) == 0
-            error(['No valid control points found for camera ' str2num(i)]);
-          end
-        end
-      end
-
-      % Initialize
-      flexparams = cellfun(@Camera.parseFreeparams, flexparams, 'UniformOutput', false);
-      fixparams = Camera.parseFreeparams(fixparams);
-      n_flex = cellfun(@sum, flexparams);
-      n_fix = sum(fixparams);
-
-      % Optimize
-      if nargin < 7
-        has_lines = false;
       else
-        has_lines = true;
+        luv = arrayfun(@(img) img.gcl.uv, images, 'uniform', false);
       end
-      mxyz = cellfun(@(x, y) [mat2cell(x, ones(size(x, 1), 1)); y], xyz, lxyz, 'UniformOutput', false);
-      muv = cellfun(@(x, y) [x; y], uv, luv, 'UniformOutput', false);
-      function d = df(m)
-        newcams = Camera.updateCams(m, cams, flexparams, fixparams);
-        % d = reshape(cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false)), [], 1);
-        % dmax = 2; w = 10;
-        % d = cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false));
-        % dist = sqrt(sum(d.^2, 2));
-        % d(dist > dmax, :) = d(dist > dmax, :) * w;
-        % d = reshape(d, [], 1);
-      % end
-        if ~has_lines
-          % d = reshape(cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false)), [], 1);
-          d = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
-        else
-          % dp = cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false));
-          % dl = cell2mat(cellfun(@projerror_nearest, newcams, lxyz, luv, 'UniformOutput', false));
-          dp = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
-          dl = cell2mat(cellfun(@projdist_nearest, newcams, lxyz, luv, 'UniformOutput', false));
-          % dl(sqrt(sum(dl.^2, 2)) > dmax, :) = sqrt(dmax^2 / 2);
-          d = [dp; dl];
-          % d = sum(sum(d.^2, 2));
-          % d = sign(d) .* (abs(d) > dmax);
-          % d = [dp; dl];
-          % d = sum(sqrt(sum(d.^2, 2)) > dmax);
-        end
-        if ~isempty(dmax)
-          dl(dl > dmax) = dmax;
-        end
-        d = reshape(d, [], 1);
+      % Optimize cameras
+      [newcams, fit] = Camera.optimize_bundle(cams, uv, xyz, luv, lxyz, flexparams, fixparams, ldmax);
+      % Save new cameras
+      for i = 1:length(newcams)
+        images(i).cam = newcams{i};
       end
-      m0 = zeros(n_fix + sum(n_flex), 1);
-      % xyz, viewdir, imgsz, f, c, k
-      % xtol = [5 5 5, 180 180 180, 100 100, 100 100, 100, 100, ];
-      % HACK: Attempts to find a stable solution by reducing XTol incrementally
-      % xtols = 2:-1:-7;
-      % [mbest, ssq0] = LMFnlsq(@df, m0, 'XTol', 10 ^ xtols(1));
-      % for xtol = xtols(2:end)
-      %   [mbest, ssq] = LMFnlsq(@df, mbest, 'XTol', 10 ^ xtol);
-      %   if abs(ssq - ssq0) < 1e-2
-      %     break
-      %   end
-      % end
-      [mbest, ssq] = LMFnlsq(@df, m0);
-
-      % Compile results
-      newcams = Camera.updateCams(mbest, cams, flexparams, fixparams);
-      n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
-      % e = mat2cell(reshape(df(mbest), [], 2), n);
-      % e = {reshape(df(mbest), [], 2)};
-      % e = {df(mbest)};
-      e = cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false);
-      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
-      % rss = cellfun(@(x) sum(x.^2), e);
-      fit = struct();
-      fit.rmse = sqrt(rss ./ n);
-      n = sum(n);
-      k = n_fix + sum(n_flex);
-      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
-      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
-      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
-      fit.aic = n .* log(rss ./ n) + 2 * k .* (n ./ (n - k - 1));
-      fit.bic = n .* log(rss ./ n) + 2 * k .* log(n);
-      % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
     end
 
     function scale = getScaleFromSize(original_size, target_size)

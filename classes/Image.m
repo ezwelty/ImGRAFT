@@ -30,6 +30,9 @@ classdef Image
     svg = struct();
     gcp = struct('uv', [], 'xyz', []);
     gcl = struct('uv', [], 'xyz', []);
+    fixedpolys = {};
+    freepolys = {};
+    anchor = [];
   end
 
   properties (SetAccess = private)
@@ -85,7 +88,7 @@ classdef Image
         error('Not an object of class Camera.');
       end
       % Expand paths
-      files = cellfun(@expand_path, files, 'UniformOutput', false);
+      files = cellfun(@expand_path, files, 'uniform', false);
       files = [files{:}];
       % Preallocate array
       images(length(files)) = Image();
