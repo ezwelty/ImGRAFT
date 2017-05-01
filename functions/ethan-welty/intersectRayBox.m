@@ -1,14 +1,16 @@
-function [tmin, tmax] = intersectRayBox(ray, box)
+function [tmin, tmax] = intersectRayBox(origin, direction, boxmin, boxmax)
   % INTERSECTRAYBOX  Find the intersections of a ray with a box.
   %
-  %   [tmin, tmax] = intersectRayBox(ray, box)
+  %   [tmin, tmax] = intersectRayBox(origin, direction, boxmin, boxmax)
   %
   % Finds the intersections of a ray with a box using the algorithm presented
   % in "Efficiency issues for ray tracing" by Smit (1998).
   %
   % Inputs:
-  %   ray - Origin and direction of ray [x y z dx dy dz]
-  %   box - Two opposite corners of box [x1 y1 z1 x2 y2 z2]
+  %   origin    - Origin of ray [x, y, (z)]
+  %   direction - Direction of ray [dx, dy, (dz)]
+  %   boxmin    - Minimum corner of box [x, y, (z)]
+  %   boxmax    - Maximum corner of box [x, y, (z)]
   %
   % Outputs:
   %   tmin - Distance of entrance point from ray origin (zero if origin inside box)
@@ -18,22 +20,6 @@ function [tmin, tmax] = intersectRayBox(ray, box)
 
   % TODO: Support multiple rays.
   % TODO: Optimize for rays of shared origin.
-
-  % Check number of arguments
-  if (nargin < 2)
-    error('Specify 2 input arguments.')
-  end
-
-  % Test size of arguments
-  if (length(ray) ~= 6 || length(box) ~= 6)
-    error('Both arguments must have length = 6.')
-  end
-
-  % Break down input
-  origin = ray(1:3);
-  direction = ray(4:6);
-  boxmin = box(1:3);
-  boxmax = box(4:6);
 
   % Find intersections
   if direction(1) >= 0
@@ -66,26 +52,34 @@ function [tmin, tmax] = intersectRayBox(ray, box)
     tmax = tymax;
   end
 
-  if direction(3) >= 0
-    tzmin = (boxmin(3) - origin(3)) / direction(3);
-    tzmax = (boxmax(3) - origin(3)) / direction(3);
-  else
-    tzmin = (boxmax(3) - origin(3)) / direction(3);
-    tzmax = (boxmin(3) - origin(3)) / direction(3);
+  if numel(direction) > 2
+    if direction(3) >= 0
+      tzmin = (boxmin(3) - origin(3)) / direction(3);
+      tzmax = (boxmax(3) - origin(3)) / direction(3);
+    else
+      tzmin = (boxmax(3) - origin(3)) / direction(3);
+      tzmax = (boxmin(3) - origin(3)) / direction(3);
+    end
+
+    if tmin > tzmax || tzmin > tmax
+      tmin = [];
+      tmax = [];
+      return
+    end
+
+    if tzmin > tmin
+      tmin = tzmin;
+    end
+
+    if tzmax < tmax
+      tmax = tzmax;
+    end
   end
 
-  if tmin > tzmax || tzmin > tmax
+  if tmax < 0
     tmin = [];
     tmax = [];
     return
-  end
-
-  if tzmin > tmin
-    tmin = tzmin;
-  end
-
-  if tzmax < tmax
-    tmax = tzmax;
   end
 
   % If origin is inside box, start ray at origin

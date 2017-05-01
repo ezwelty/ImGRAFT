@@ -1,11 +1,13 @@
-function [files] = expand_path(path, relative)
-% EXPAND_PATH Expand path with wildcards to file paths
-%
-% Inputs:
-%   path - Relative or absolute path with asterisk wildcards
-%   relative - Whether to return relative (or absolute) paths
-% 
-% See also dir, relativepath
+function files = expand_path(path, relative)
+  % EXPAND_PATH Expand path with wildcards to file paths.
+  %
+  %   files = expand_path(path, relative = true)
+  %
+  % Inputs:
+  %   path - Relative or absolute path with asterisk wildcards
+  %   relative - Whether to return relative (or absolute) paths
+  %
+  % See also dir, relativepath
 
   if nargin < 2
     relative = true;

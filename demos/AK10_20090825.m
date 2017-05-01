@@ -111,7 +111,7 @@ end
 % Then, iterate as points (slow, but effective):
 % (for best results, set dmax threshold)
 dmax = 10;
-freeparams = {{'viewdir', 'f', 'k', [1 2]}};
+freeparams = {'viewdir'};
 for i = 1:50
   previous_cams = newcams;
   previous_rmse = fit.rmse;

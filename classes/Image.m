@@ -1,35 +1,35 @@
-classdef Image < handle
-% IMAGE Photographic image data structure.
-%
-% Image Properties:
-% cam      - Camera object
-%
-% Image Properties (read-only):
-% info     - File information from imfinfo
-% file     - Path to image file
-% date_str - Capture date and time as a string ('yyyy-mm-dd HH:MM:SS.FFF')
-% date_num - Cature date and time as a serial date number
-% shutter  - Shutter speed in seconds
-% aperture - Lens aperture
-% iso      - Film speed
-% ev       - Exposure value
-% gps      - GPS metadata
-% size     - Size of original image [nx|ncols|width, ny|nrows|height]
-%
-% Image Properties (dependent):
-% scale    - Scaling between original and camera image size
-%
-% Image Methods:
-% Image - Construct a new Image object
-%
-% Image Methods (cached):
-% read  - Read image data from file
-% clear - Clear object cache
-%
-% See also imfinfo, datestr, datenum
+classdef Image
+  % IMAGE Photographic image data structure.
+  %
+  % Image Properties:
+  % cam      - Camera object
+  %
+  % Image Properties (read-only):
+  % info     - File information from imfinfo
+  % file     - Path to image file
+  % date_str - Capture date and time as a string ('yyyy-mm-dd HH:MM:SS.FFF')
+  % date_num - Cature date and time as a serial date number
+  % shutter  - Shutter speed in seconds
+  % aperture - Lens aperture
+  % iso      - Film speed
+  % ev       - Exposure value
+  % gps      - GPS metadata
+  % size     - Size of original image [nx|ncols|width, ny|nrows|height]
+  %
+  % Image Properties (dependent):
+  % scale    - Scaling between original and camera image size
+  %
+  % Image Methods:
+  % Image - Construct a new Image object
+  % read  - Read image data
+  %
+  % See also imfinfo, datestr, datenum
 
   properties
     cam
+    svg = struct();
+    gcp = struct('uv', [], 'xyz', []);
+    gcl = struct('uv', [], 'xyz', []);
   end
 
   properties (SetAccess = private)
@@ -47,30 +47,24 @@ classdef Image < handle
     gps
     size
   end
-    
+
   properties (Dependent)
     scale
   end
-  
-  properties (SetAccess = private, Hidden = true)
-    cached_I
-  end
-  
+
   methods
 
-    % Image creation
-    
     function images = Image(files, cam)
-    % IMAGE  Construct a new Image object.
-    %
-    %   img = Image(files, cam = Camera())
-    %
-    % Image size, sensor size, and focal length are loaded from the file
-    % unless overloaded by cam.
-    %
-    % Inputs:
-    %   file - Path to image file
-    %   cam  - Camera object
+      % IMAGE Construct a new Image object.
+      %
+      %   img = Image(files, cam = Camera())
+      %
+      % Image size, sensor size, and focal length are loaded from the file
+      % unless overloaded by cam.
+      %
+      % Inputs:
+      %   file - Path to image file
+      %   cam  - Camera object
 
       % Check inputs
       if nargin < 1
@@ -113,7 +107,7 @@ classdef Image < handle
         end
         % Sensor size [mm width, mm height]
         if isempty(img.cam.sensorsz) && all(isfield(img.info, {'Make', 'Model'}))
-          img.cam.sensorsz = Camera.sensorSize(img.info.Make, img.info.Model);
+          img.cam.sensorsz = Camera.getSensorSize(img.info.Make, img.info.Model);
         end
         % Focal length in mm (if not already set in pixels)
         if ~isempty(img.cam.sensorsz) && isempty(img.cam.f)
@@ -124,6 +118,11 @@ classdef Image < handle
             img.cam.fmm = img.info.DigitalCamera.FocalLengthIn35mmFilm;
             warning('True focal length not found, using 35mm equivalent.');
           end
+        end
+        % SVG
+        svg_path = change_ext(file, '.svg');
+        if exist(svg_path, 'file')
+          img.svg = svg2struct(svg_path);
         end
       end
     end
@@ -222,11 +221,11 @@ classdef Image < handle
         end
       end
     end
-    
+
     function value = get.size(img)
       value = [img.info.Width, img.info.Height];
     end
-    
+
     function value = get.scale(img)
       if isempty(img.cam.imgsz)
         value = [];
@@ -234,8 +233,8 @@ classdef Image < handle
         value = Camera.getScaleFromSize(img.size, img.cam.imgsz);
       end
     end
-    
-    function set.scale(img, value)
+
+    function img = set.scale(img, value)
       old_scale = img.scale;
       if isempty(old_scale)
         img.cam.imgsz = value * img.size;
@@ -245,45 +244,25 @@ classdef Image < handle
           img.cam = img.cam.resize(value);
         end
       end
-      if ~isequal(old_scale, value)
-        img.clear();
+    end
+
+    function I = read(img, scale)
+      % READ Read image data.
+      %
+      %   I = img.read(scale = img.scale)
+      %
+      % Inputs:
+      %   scale - Resize scale factor
+
+      if nargin < 2 || isempty(scale)
+        scale = img.scale;
+      end
+      I = imread(img.file);
+      if ~isempty(scale) && scale ~= 1
+        I = imresize(I, img.scale);
       end
     end
 
-    % Image read
-    
-    function I = read(img, scale)
-    % READ Read image data from file.
-    % 
-    %   I = img.read(scale = img.scale)
-    % 
-    % Inputs:
-    %   scale - Scale factor for resizing the result
-    
-      if nargin < 2
-        scale = img.scale;
-      end
-      if isempty(img.cached_I) || scale ~= img.scale
-        I = imread(img.file);
-        if ~isempty(scale) && scale ~= 1
-          I = imresize(I, scale);
-        end
-        if scale == img.scale
-          img.cached_I = I;
-        end
-      else
-        I = img.cached_I;
-      end
-    end
-    
-    function clear(img)
-    % CLEAR Clear object cache.
-    % 
-    %   img.clear()
-    
-      img.cached_I = [];
-    end
-  
   end % methods
 
   methods (Static)

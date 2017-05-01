@@ -7,13 +7,13 @@ function xyz = intersectRayPlane(varargin)
   % Finds the intersections of rays with a plane using the algebraic method.
   %
   % Inputs:
-  %   rays  – Origin and direction of rays [x y z dx dy dz; ...]
-  %   P0    – Shared point of origin [x y z]
-  %   v     – Direction vectors [dx dy dz; ...]
-  %   plane – Plane [a b c d], where ax + by + cz + d = 0
+  %   rays  - Origin and direction of rays [x y z dx dy dz; ...]
+  %   P0    - Shared point of origin [x y z]
+  %   v     - Direction vectors [dx dy dz; ...]
+  %   plane - Plane [a b c d], where ax + by + cz + d = 0
   %
   % Outputs:
-  %   xyz   – Coordinates of the intersection points (NaN if none) [x y z; ...]
+  %   xyz   - Coordinates of the intersection points (NaN if none) [x y z; ...]
 
   if (nargin < 2)
     error('Specify at least 2 input arguments.')

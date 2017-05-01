@@ -4,11 +4,9 @@ classdef Camera
   % This class is an implementation of the distorted camera model used by OpenCV:
   % http://docs.opencv.org/modules/calib3d/doc/camera_calibration_and_3d_reconstruction.html
   %
-  % Note: Pixel coordinates are defined such that [1, 1] is the center of the
-  % upper left pixel of the image and [nx, ny] is the center of the lower right
-  % pixel, where nx and ny are the width and height of the image. As a result,
-  % the image extends from [0.5, 0.5] to [nx + 0.5, ny + 0.5] and the center is
-  % at [(nx + 1) / 2, (ny + 1) / 2].
+  % Note: Pixel coordinates are defined such that [0, 0] is the upper-left of the
+  % upper-left pixel and [nx, ny] is the lower-right of the lower-right pixel,
+  % where nx and ny are the width and height of the image.
   %
   % Camera Properties:
   % xyz      - Position in world coordinates [x, y, z]
@@ -55,7 +53,6 @@ classdef Camera
     fullmodel
     R
     fmm
-    framebox
     framepoly
   end
 
@@ -70,32 +67,31 @@ classdef Camera
       %
       % 1. Initialize with default parameters, then edit individual parameters:
       %
-      %   cam = camera()
+      %   cam = Camera()
       %   cam.viewdir = [pi 0 0] % look west
       %
       % 2. Specify camera parameters as a list:
       %
-      %   cam = camera(xyz, imgsz, viewdir, f, c, k, p, sensorsz)
+      %   cam = Camera(xyz, imgsz, viewdir, f, c, k, p, sensorsz)
       %
-      % 3. Specify camera parameters as named arguments:
+      % 3. Specify Camera parameters as named arguments:
       %
-      %   cam = camera('xyz', [0 0 10], 'viewdir', [pi 0 0])
+      %   cam = Camera('xyz', [0 0 10], 'viewdir', [pi 0 0])
       %
-      % 4. Specify camera parameters in a structure with matching field names:
+      % 4. Specify Camera parameters in a structure with matching field names:
       %
       %   S.xyz = [0 0 10]; S.viewdir = [pi 0 0];
-      %   cam = camera(S)
+      %   cam = Camera(S)
       %
-      % 5. Specify camera parameters as a 20-element or shorter (fullmodel) vector:
+      % 5. Specify Camera parameters as a 20-element or shorter (fullmodel) vector:
       %
-      %   cam = camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
+      %   cam = Camera([1 1 0 1024 768 pi 0 0 1000 1000 512 384 0 0 0 0 0 0 0 0])
 
       % Single vector argument: build camera from fullmodel vector
       if nargin == 1 && isnumeric(varargin{1})
         cam.fullmodel = varargin{1};
         return
       end
-
       % All other cases: set and validate camera parameters individually
       p = inputParser;
       p.CaseSensitive = false;
@@ -116,7 +112,6 @@ classdef Camera
         varargin{1} = cell2struct(values(include), fields(include));
       end
       p.parse(varargin{:});
-
       % Set parameters
       for field = fieldnames(p.Results)'
         cam.(field{1}) = p.Results.(field{1});
@@ -135,9 +130,21 @@ classdef Camera
         value(end + 1) = value(end);
       end
       cam.imgsz = value;
-      % c: 2-element vector, default = (imgsz[2 1] + 1) / 2
+      cam = cam.update_c();
+    end
+
+    function cam = set.c(cam, value)
+      % c: 2-element vector, default = imgsz / 2
+      if isempty(value)
+        cam = cam.update_c();
+      else
+        cam.c = value;
+      end
+    end
+
+    function cam = update_c(cam)
       if isempty(cam.c) && ~isempty(cam.imgsz)
-        cam.c = (cam.imgsz + 1) / 2;
+        cam.c = cam.imgsz / 2;
         cam.c(cam.imgsz == 0) = 0;
       end
     end
@@ -194,11 +201,11 @@ classdef Camera
       else
         k = 0; % (unconstrained)
         if value(3, 3) == 1
-            w = pi / 2;
-            p = -k + atan2(-value(1, 2), value(1, 1));
+          w = pi / 2;
+          p = -k + atan2(-value(1, 2), value(1, 1));
         else
-            w = -pi / 2;
-            p = k + atan2(-value(1, 2), value(1, 1));
+          w = -pi / 2;
+          p = k + atan2(-value(1, 2), value(1, 1));
         end
       end
       cam.viewdir = rad2deg([p w k]);
@@ -209,8 +216,12 @@ classdef Camera
         error('Camera.fullmodel must have 20 elements.')
       end
       cam.xyz = value(1:3);
-      cam.imgsz = value(4:5); cam.viewdir = value(6:8); cam.f = value(9:10);
-      cam.c = value(11:12); cam.k = value(13:18); cam.p = value(19:20);
+      cam.imgsz = value(4:5);
+      cam.viewdir = value(6:8);
+      cam.f = value(9:10);
+      cam.c = value(11:12);
+      cam.k = value(13:18);
+      cam.p = value(19:20);
     end
 
     function value = get.R(cam)
@@ -254,184 +265,328 @@ classdef Camera
       end
     end
 
-    function cam = resize(cam, scale, parameters)
-      % RESIZE  Resize a camera image.
+    function value = get.framepoly(cam)
+      value = [0 0; 0 cam.imgsz(2); cam.imgsz; cam.imgsz(1) 0; 0 0];
+    end
+
+    % Methods
+
+    function cam = idealize(cam)
+      % IDEALIZE Idealize a camera.
+      %
+      %   cam = cam.idealize()
+      %
+      % Sets principal point (c) and distortion coefficients to their defaults.
+
+      cam.k = [];
+      cam.p = [];
+      cam.c = [];
+    end
+
+    function cam = resize(cam, scale)
+      % RESIZE Resize a camera.
       %
       %   cam = cam.resize(scale)
       %   cam = cam.resize(imgsz)
       %
-      % The focal length (f) and principal point (c) are adjusted as needed to
-      % account for the change in image size (imgsz).
-      %
-      % NOTE: Since an image can only contain whole pixels, the resulting image size
-      % may not equal the target image size. Because of this rounding, calls to
-      % this function may be non-reversible.
+      % Adjusts the focal length (f) and principal point (c) to the new image
+      % size (imgsz).
       %
       % Inputs:
       %   scale - Scale factor
-      %   imgsz - Desired image size [nx|ncols, ny|nrows]
+      %   imgsz - Target image size [nx|ncols|width, ny|nrows|height]
 
-      % Calculate scale [x, y]
+      if isempty(cam.imgsz) || nargin < 2
+        return
+      end
+      % Calculate scale from target image size
       if length(scale) > 1
         scale = Camera.getScaleFromSize(cam.imgsz, scale);
       end
       target_size = round(scale * cam.imgsz);
       scale = target_size ./ cam.imgsz;
-      % Apply scale to parameters
-      % FIXME: What other rescaling is necessary?
-      f = cam.f .* scale;
-      c = ((target_size + 1) / 2) + (cam.c - ((cam.imgsz + 1) / 2)) .* scale;
-      % Save to new object
-      cam = cam;
-      cam.f = f;
-      cam.c = c;
+      % Apply scale
+      if ~isempty(cam.f)
+        cam.f = cam.f .* scale;
+      end
+      if ~isempty(cam.c)
+        cam.c = (target_size / 2) + (cam.c - (cam.imgsz / 2)) .* scale;
+      end
       cam.imgsz = target_size;
     end
 
-    function cam = idealize(cam)
-      % Make a copy
-      cam = cam;
-      % Strip distortion
-      cam.k = zeros(size(cam.k));
-      cam.p = zeros(size(cam.p));
-      cam.c = [];
-      cam.imgsz = cam.imgsz;
-    end
+    function pyramid = viewpyramid(cam, radius, include_origin)
+      % VIEWPYRAMID Boundaries of camera view.
+      %
+      %   value = cam.viewpyramid(radius = 1, include_origin = true)
+      %
+      % Inputs:
+      %   radius         - Length of pyramid edges
+      %   include_origin - Whether to include lines to camera position
+      %
+      % Outputs:
+      %   pyramid - Pyramid points [x1 y1 z1; ...]
 
-    % Camera geometry
-
-    function value = get.framebox(cam)
-      value = [0 cam.imgsz(1) 0 cam.imgsz(2)] + 0.5;
-    end
-
-    function value = get.framepoly(cam)
-      value = flipud([0 0 ; cam.imgsz(1) 0 ; cam.imgsz(1) cam.imgsz(2) ; 0 cam.imgsz(2) ; 0 0] + 0.5); % flip so cw in typical xy-space
-    end
-
-    function value = viewbox(cam, radius)
-      if nargin < 2
-        pyramid = cam.viewpyramid();
-      else
-        pyramid = cam.viewpyramid(radius);
+      if nargin < 2 || isempty(radius)
+        radius = 1;
       end
+      if nargin < 3 || isempty(include_origin)
+        include_origin = true;
+      end
+      u = (0:cam.imgsz(1))';
+      v = (0:cam.imgsz(2))';
+      edges = {
+        cbind(u, 0),
+        cbind(cam.imgsz(1), v),
+        cbind(flip(u), cam.imgsz(2)),
+        cbind(0, flip(v))
+      };
+      for i = 1:length(edges)
+        dxyz = cam.invproject(edges{i});
+        scaled_dxyz = dxyz .* (radius ./ sqrt(sum(dxyz.^2, 2)));
+        edges{i} = cam.xyz + scaled_dxyz;
+        if include_origin
+          edges{i} = [cam.xyz; edges{i}; cam.xyz];
+        end
+      end
+      pyramid = cell2mat(edges);
+    end
+
+    function box = viewbox(cam, radius)
+      % VIEWBOX Bounding box of camera view.
+      %
+      %   value = cam.viewpyramid(radius = 1)
+      %
+      % Inputs:
+      %   radius - Maxmimum camera view distance
+      %
+      % Outputs:
+      %   box - Corners of bounding box [min(x y z); max(x y z)]
+      %
+      % See also viewpyramid
+
+      if nargin < 2
+        radius = [];
+      end
+      pyramid = cam.viewpyramid(radius);
       value = [min(pyramid); max(pyramid)];
     end
 
-    function value = viewpyramid(cam, radius)
-      u = [0:cam.imgsz(1)]'; v = [0:cam.imgsz(2)]';
-      edge_uv = [
-        [u repmat(0, length(u), 1)];
-        [repmat(cam.imgsz(1), length(v), 1) v];
-        [flip(u) repmat(cam.imgsz(2), length(u), 1)];
-        [repmat(0, length(v), 1) flip(v)]
-      ];
-      directions = cam.invproject(edge_uv);
-      if nargin < 2
-        radius = 1;
-      end
-      scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
-      edge_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
-      value = [edge_xyz; cam.xyz];
-    end
+    function h = plot(cam, dim, radius, color)
+      % PLOT Plot camera.
+      %
+      %   h = cam.plot(dim = 3, radius = 1, color = rand(1, 3))
+      %
+      % Inputs:
+      %   dim    - Dimension of plot (2 or 3)
+      %   radius - Radius of plotted view pyramid
+      %   color  - Color of camera
+      %
+      % Outputs:
+      %   h - Plot handle
+      %
+      % See also viewpyramid
 
-    function plot(cam, radius, color)
-      plot3(cam.xyz(1), cam.xyz(2), cam.xyz(3), 'r.'); hold on;
-      corner_uv = [0 0; cam.imgsz(1) 0; cam.imgsz; 0 cam.imgsz(2)] + 0.5;
-      corner_xyz = cam.invproject(corner_uv);
-      directions = bsxfun(@minus, corner_xyz, cam.xyz);
-      if nargin < 2
+      % TODO: In 2D, plot simple camera cone.
+
+      if nargin < 2 || isempty(dim)
+        dim = 3;
+      end
+      if nargin < 3 || isempty(radius)
         radius = 1;
       end
-      scaled_directions = bsxfun(@times, directions, radius ./ sum(directions.^2, 2));
-      corner_xyz = bsxfun(@plus, scaled_directions, cam.xyz);
-      plot3(corner_xyz([1:4 1], 1), corner_xyz([1:4 1], 2), corner_xyz([1:4 1], 3), 'k-');
-      plot3([repmat(cam.xyz(1), 4, 1) corner_xyz(:, 1)]', [repmat(cam.xyz(2), 4, 1) corner_xyz(:, 2)]', [repmat(cam.xyz(3), 4, 1) corner_xyz(:, 3)]', 'k-');
-      if nargin < 3
+      if nargin < 4 || isempty(color)
         color = rand(1, 3);
       end
-      patch(corner_xyz(:, 1), corner_xyz(:, 2), corner_xyz(:, 3), color, 'FaceAlpha', 0.5);
+      if dim == 3
+        corner_directions = cam.invproject(cam.framepoly);
+        corners = cam.xyz + corner_directions .* (radius ./ sqrt(sum(corner_directions.^2, 2)));
+        h = plot3(cbind(cam.xyz(1), corners(:, 1))', cbind(cam.xyz(2), corners(:, 2))', cbind(cam.xyz(3), corners(:, 3))', 'color', color);
+        hold on
+        pyramid = cam.viewpyramid(radius, false);
+        fill3(pyramid(:, 1), pyramid(:, 2), pyramid(:, 3), color, 'FaceAlpha', 0.5);
+      elseif dim == 2
+        pyramid = cam.viewpyramid(radius, true);
+        h = plot(pyramid(:, 1), pyramid(:, 2), 'color', color);
+      end
+      xlabel('X'), ylabel('Y'), zlabel('Z')
+      hold off
     end
 
-    function plotDistortion(cam, scale)
-      if nargin < 2
+    function h = plot_distortion(cam, scale, normalize, varargin)
+      % PLOT_DISTORTION Plot distortion as displacement vectors.
+      %
+      %   h = cam.plot_distortion(scale = 1, normalize = false, ...)
+      %
+      % Vectors point from the current to ideal image positions.
+      %
+      % Inputs:
+      %   scale     - Scale factor for displacement vectors
+      %   normalize - Whether to plot image with unit width
+      %   ...       - Arguments passed to quiver()
+      %
+      % Outputs:
+      %   h - Plot handle
+      %
+      % See also quiver
+
+      if nargin < 2 || isempty(scale)
         scale = 1;
       end
-      du = 100; nu = round(cam.imgsz(1) / du); du = cam.imgsz(2) / nu;
-      u = (0:du:cam.imgsz(1)) + 0.5;
-      v = (0:du:cam.imgsz(2)) + 0.5;
-      [pu pv] = meshgrid(u, v);
-      P0 = [pu(:) pv(:)]; P1 = camera2image(cam.idealize, cam.image2camera(P0));
-      plot(cam.framepoly(:, 1), cam.framepoly(:, 2), 'k:'); hold on;
-      quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, 'r');
-      set(gca, 'xlim', cam.imgsz(1) * [-0.1 1.1], 'ylim', cam.imgsz(2) * [-0.1 1.1], 'ydir', 'reverse');
-      axis equal; hold off;
+      if nargin < 3 || isempty(normalize)
+        normalize = false;
+      end
+      nu = 50;
+      duv = cam.imgsz(1) / nu;
+      u = 0:duv:cam.imgsz(1);
+      v = 0:duv:cam.imgsz(2);
+      [U V] = meshgrid(u, v);
+      P0 = [U(:) V(:)];
+      P1 = cam.idealize().camera2image(cam.image2camera(P0));
+      box = cam.framepoly;
+      if normalize
+        box = box / cam.imgsz(1);
+        P0 = P0 / cam.imgsz(1);
+        P1 = P1 / cam.imgsz(1);
+      end
+      h = plot(box(:, 1), box(:, 2), 'k:');
+      hold on
+      quiver(P0(:, 1), P0(:, 2), scale * (P1(:, 1) - P0(:, 1)), scale * (P1(:, 2) - P0(:, 2)), 0, varargin{:});
+      set(gca, 'ydir', 'reverse');
+      axis equal
+      hold off
     end
 
     % Transformations
 
     function in = inframe(cam, uv)
-      box = cam.framebox;
-      in = uv(:, 1) >= box(1) & uv(:, 1) <= box(2) & uv(:, 2) >= box(3) & uv(:, 2) <= box(4);
+      % INFRAME Check whether points are in the image.
+      %
+      %   in = cam.inframe(uv)
+      %
+      % NOTE: Points on edge are considered inside.
+      %
+      % Inputs:
+      %   uv - Image coordinates [u1 v1; ...]
+
+      in = all(uv >= 0, 2) & uv(:, 1) <= cam.imgsz(1) & uv(:, 2) <= cam.imgsz(2);
     end
 
     function in = infront(cam, xyz)
-      xyz = bsxfun(@minus, xyz, cam.xyz);
-      xyz = xyz * cam.R';
-      in = xyz(:, 3) > 0;
+      % INFRONT Check whether points are infront of the camera.
+      %
+      %   in = cam.infront(xyz)
+      %
+      % Inputs:
+      %   xyz - World coordinates [x1 y1 z1; ...]
+
+      dxyz = xyz - cam.xyz;
+      Xc = dxyz * cam.R';
+      in = Xc(:, 3) > 0;
     end
 
     function xy = image2camera(cam, uv)
-      % Convert image to camera coordinates
-      % [x, y] = [(x' - cx) / fx, (y' - cy) / fy]
+      % IMAGE2CAMERA Convert image to camera coordinates.
+      %
+      %   xy = cam.image2camera(uv)
+      %
+      % Inputs:
+      %   uv - Image coordinates [u1 v1; ...]
+      %
+      % Outputs:
+      %   xy - Normalized camera coordinates [x1 y1; ...]
+      %
+      % See also camera2image
+
       xy = [(uv(:, 1) - cam.c(1)) / cam.f(1), (uv(:, 2) - cam.c(2)) / cam.f(2)];
-      % Remove distortion
       xy = cam.undistort(xy);
     end
 
     function uv = camera2image(cam, xy)
+      % CAMERA2IMAGE Convert camera to image coordinates.
+      %
+      %   uv = cam.camera2image(xy)
+      %
+      % Inputs:
+      %   xy - Normalized camera coordinates [x1 y1; ...]
+      %
+      % Outputs:
+      %   uv - Image coordinates [u1 v1; ...]
+      %
+      % See also image2camera
+
       xy = cam.distort(xy);
       uv = [cam.f(1) * xy(:, 1) + cam.c(1), cam.f(2) * xy(:, 2) + cam.c(2)];
     end
 
     function dxyz = camera2world(cam, xy)
-      % Convert camera coordinates to world ray directions
+      % CAMERA2WORLD Convert camera coordinates to world ray directions.
+      %
+      %   dxyz = cam.camera2world(xy)
+      %
+      % Inputs:
+      %   xy - Normalized camera coordinates [x1 y1; ...]
+      %
+      % Outputs:
+      %   dxyz - World ray directions [dx1 dy1 dz1; ...]
+      %
+      % See also world2camera
+
       dxyz = [xy ones(size(xy, 1), 1)] * cam.R;
     end
 
-    function [xy, infront] = world2camera(cam, xyz, ray_directions)
-      if nargin < 3
-        ray_directions = false;
+    function [xy, infront] = world2camera(cam, xyz, directions)
+      % WORLD2CAMERA Convert world coordinates (directions) to camera coordinates.
+      %
+      %   [xy, infront] = cam.camera2world(xyz, directions = false)
+      %
+      % Inputs:
+      %   xyz        - World coordinates [x1 y1 z1; ...]
+      %   directions - Whether xyz represents coordinates or ray directions
+      %
+      % Outputs:
+      %   xy      - Camera coordinates [x1 y1; ...], NaN if behind camera
+      %   infront - Whether point is in front or behind camera
+      %
+      % See also world2camera
+
+      if nargin < 3 || isempty(directions)
+        directions = false;
       end
-      if ~ray_directions
-        % Convert world to camera coordinates
-        xyz = bsxfun(@minus, xyz, cam.xyz);
+      if ~directions
+        % Convert coordinates to directions
+        xyz = xyz - cam.xyz;
       end
       xyz = xyz * cam.R';
       % Normalize by perspective division
-      xy = bsxfun(@rdivide, xyz(:, 1:2), xyz(:, 3));
+      xy = xyz(:, 1:2) ./ xyz(:, 3);
       % Convert points behind camera to NaN
       infront = xyz(:, 3) > 0;
       xy(~infront, :) = NaN;
     end
 
-    function [uv, infront] = project(cam, xyz, ray_directions)
-      % PROJECT  Project 3D world coordinates to 2D image coordinates.
+    function [uv, infront] = project(cam, xyz, directions)
+      % PROJECT Project coordinates (directions) to images coordinates.
       %
-      %   uv = cam.project(xyz)
+      %   [uv, infront] = cam.project(xy)
+      %   [uv, infront] = cam.project(xyz, directions = false)
       %
       % Inputs:
-      %   xyz - World coordinates [x1 y1 z1; x2 y2 z2; ...]
+      %   xy         - Normalized camera coordinates [x1 y1; ...]
+      %   xyz        - World coordinates [x1 y1 z1; ...]
+      %   directions - Whether xyz represents coordinates or ray directions
       %
       % Outputs:
-      %   uv      - Image coordinates [u1 v1; u2 v2; ...]
+      %   uv      - Image coordinates [u1 v1; ...]
+      %   infront - Whether point is in front or behind camera
       %
-      % See also: camera.invproject
+      % See also invproject
 
-      if nargin < 3
-        ray_directions = false;
+      if nargin < 3 || isempty(directions)
+        directions = false;
       end
       if size(xyz, 2) == 3
-        [xy, infront] = cam.world2camera(xyz, ray_directions);
+        [xy, infront] = cam.world2camera(xyz, directions);
         uv = cam.camera2image(xy);
       elseif size(xyz, 2) == 2
         uv = cam.camera2image(xyz);
@@ -442,13 +597,14 @@ classdef Camera
     end
 
     function xyz = invproject(cam, uv, S)
-      % INVPROJECT  Project 2D image coordinates out as 3D world coordinates.
+      % INVPROJECT Project image coordinates to world coordinates (directions).
       %
-      %   xyz = cam.invproject(uv[, S])
+      %   dxyz = cam.invproject(uv)
+      %   xyz = cam.invproject(uv, S)
       %
-      % Image coordinates are projected out of the camera as rays.
-      % If a surface (S) is specified, the intersections with the surface are returned (or NaN if none).
-      % Otherwise, ray directions are returned.
+      % Image coordinates are projected out of the camera as rays. If a surface
+      % (S) is specified, the intersections with the surface are returned
+      % (or NaN if none). Otherwise, ray directions are returned.
       %
       % Inputs:
       %   uv - Image coordinates [u1 v1; u2 v2; ...]
@@ -456,26 +612,20 @@ classdef Camera
       %        (defined as [a b c d], where ax + by + cz + d = 0)
       %
       % Outputs:
-      %   xyz - World coordinates of intersections [x1 y1 z1; x2 y2 z2; ...], or
-      %         ray directions [dx1 dy1 dz1; dx2 dy2 dz2; ...]
+      %   dxyz - World ray directions [dx1 dy1 dz1; ...]
+      %   xyz  - World coordinates of intersections [x1 y1 z1; ...]
       %
-      % See also: camera.project
+      % See also project
 
-      % Convert to normalized camera coordinates
       xy = cam.image2camera(uv);
-      % Convert to ray direction vectors
       xyz = cam.camera2world(xy);
-      % Track valid coordinates
       is_valid = ~any(isnan(xyz), 2);
-
       if nargin == 2
         % No surface: Return ray directions
-
       elseif nargin > 2 && isnumeric(S) && length(S) == 4
         % Plane: Return intersection of rays with plane
         xyz(is_valid, :) = intersectRayPlane(cam.xyz, xyz(is_valid, :), S);
-
-      elseif nargin > 2 && strcmp(class(S), 'DEM')
+      elseif nargin > 2 && isa(S, 'DEM')
         % DEM: Return intersection of rays with DEM
         for i = find(is_valid)'
           % xyz(i, :) = intersectRayDEM([cam.xyz xyz(i, :)], S);
@@ -484,48 +634,215 @@ classdef Camera
       end
     end
 
-    % Calibration
+    % Lines
 
-    function [newcam, fit] = optimize(cam, xyz, uv, freeparams)
-      % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
+    function lines = clip_line_infront(cam, xyz, intersections)
+      % CLIP_LINE_INFRONT Clips a line into the segments in front of a camera.
       %
-      %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
-      %
-      % Uses an optimization routine to minize the root-mean-square reprojection
-      % error of image-world point correspondences (xyz, uv) by adjusting the
-      % specified camera parameters.
-      %
-      % If uv has three columns, the third column is interpreted as a weight
-      % in the misfit function.
+      %   lines = cam.clip_line_infront(xyz, intersections = true)
       %
       % Inputs:
-      %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
-      %   uv         - Image coordinates [u1 v1; u2 v2; ...]
-      %                (optional 3rd column may specify weights)
-      %   freeparams - Either a string, array, or 20-element vector describing
-      %                which parameters should be optimized (see Examples).
+      %   xyz           - World coordinates [x1 y1 z1; ...]
+      %   intersections - Whether to insert vertices at intersections with camera plane
       %
       % Outputs:
-      %   newcam - Optimized camera
-      %   rmse   - Root-mean-square reprojection error
-      %   aic    - Akaike information criterion for reprojection errors, which
-      %            can help determine an appropriate degree of complexity for
-      %            the camera model (i.e. avoid overfitting).
-      %            NOTE: Only strictly applicable for unweighted fitting.
+      %   lines - Line segments in front of camera {[x1 y1 z1; ...], ...}
       %
-      % Examples:
-      %   % Optimize all elements of viewdir:
-      %   cam.optimizecam(xyz, uv, '00000111000000000000')
-      %   cam.optimizecam(xyz, uv, 'viewdir')
-      %   cam.optimizecam(xyz, uv, {'viewdir'})
-      %   % Also optimize the third (z) element of xyz:
-      %   cam.optimizecam(xyz, uv, '00100111000000000000')
-      %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
+      % See also infront, intersectEdgePlane
 
-      [newcam, fit] = camera.optimizeCams(cam, xyz, uv, freeparams);
-      newcam = newcam{1};
+      if nargin < 3 || isempty(intersections)
+        intersections = true;
+      end
+      in = cam.infront(xyz);
+      [lines, starts, stops] = splitmat(xyz, in);
+      if isempty(find(~in, 1)) || ~intersections
+        return
+      end
+      plane = createPlane(cam.xyz, cam.invproject(cam.c));
+      for i = 1:numel(lines)
+        if starts(i) > 1 && all(isfinite(xyz(starts(i) - 1, :)))
+          edge = horzcat(xyz(starts(i) - 1, :), xyz(starts(i), :));
+          pt = intersectEdgePlane(edge, plane);
+          lines{i} = vertcat(pt, lines{i});
+        end
+        if stops(i) < size(xyz, 1) && all(isfinite(xyz(stops(i) + 1, :)))
+          edge = horzcat(xyz(stops(i), :), xyz(stops(i) + 1, :));
+          pt = intersectEdgePlane(edge, plane);
+          lines{i} = vertcat(lines{i}, pt);
+        end
+      end
     end
+
+    function lines = clip_line_inframe(cam, uv, intersections)
+      % CLIP_LINE_INFRAME Clips a line into the segments in image frame.
+      %
+      %   lines = cam.clip_line_inframe(uv, intersections = true)
+      %
+      % Inputs:
+      %   uv            - Image coordinates [x1 y1; ...]
+      %   intersections - Whether to insert vertices at intersections with frame
+      %
+      % Outputs:
+      %   lines - Line segments inside image {[x1 y1; ...], ...}
+      %
+      % See also inframe
+
+      if nargin < 3 || isempty(intersections)
+        intersections = true;
+      end
+      in = cam.inframe(uv);
+      [lines, starts, stops] = splitmat(uv, in);
+      if isempty(find(~in, 1)) || ~intersections
+        return
+      end
+      box = [0, 0, cam.imgsz];
+      for i = 1:numel(lines)
+        if starts(i) > 1
+          edge = horzcat(uv(starts(i) - 1, :), uv(starts(i), :));
+          pt = intersectEdgeBox(edge, box);
+          lines{i} = vertcat(pt, lines{i});
+        end
+        if stops(i) < size(uv, 1)
+          edge = horzcat(uv(stops(i), :), uv(stops(i) + 1, :));
+          pt = intersectEdgeBox(edge, box);
+          lines{i} = vertcat(lines{i}, pt);
+        end
+      end
+    end
+
+    function [e, d, puv] = projerror_lines(cam, uv, xyz)
+      % PROJERROR_LINES Reprojection errors of lines to nearest image points.
+      %
+      %   [e, d, puv] = cam.projerror_lines(uv, xyz)
+      %
+      % Inputs:
+      %   uv         - Target image coordinates [x1 y1; ...]
+      %                An optional third column can contain weights
+      %   xyz        - World coordinates {[x1 y1 z1; ...], ...}
+      %
+      % Outputs:
+      %   e    - Pixel errors between projected and target image coordinates [du1 dv1; ...]
+      %   d    - Pixel distances between projected and target image coordinates
+      %   puv  - Projected coordinates of lines nearest target image coordinates
+      %
+      % See also projerror
+
+      % TODO: Add resample density argument (currently ~1 point per pixel)
+
+      if ~iscell(xyz)
+        xyz = {xyz};
+      end
+      if nargin < 4 || isempty(directions)
+        directions = false;
+      end
+      pts = [];
+      for i = 1:length(xyz)
+        % Clip segments in front of camera
+        lines = cam.clip_line_infront(xyz{i});
+        for j = 1:length(lines)
+          % Project to camera
+          xy = cam.world2camera(lines{j});
+          % Resample
+          % TODO: Clip to camera boundary, accounting for distortion
+          l = polylineLength(xy, 'open');
+          resampled_xy = resamplePolyline(xy, ceil(l * max(cam.f)));
+          % Project to image
+          puv = cam.camera2image(resampled_xy);
+          % Clip points inside image
+          in = cam.inframe(puv);
+          % Merge as points
+          pts = vertcat(pts, puv(in, :));
+        end
+      end
+      if isempty(pts)
+        [e, d, dxyz] = deal([]);
+        return
+      end
+      [d, ind] = min(pdist2(uv, pts, 'euclidean'), [], 2);
+      e = pts(ind, :) - uv;
+      if size(uv, 2) > 2
+        e = e .* (uv(:, 3) / mean(uv(:, 3)));
+        d = sqrt(sum(e.^2, 2));
+      end
+      if nargout > 2
+        puv = pts(ind, :);
+      end
+    end
+
+    % Calibration
+
+    function [e, d] = projerror(cam, uv, xyz, directions)
+      % PROJERROR Reprojection errors of coordinates.
+      %
+      %   e = cam.projerror(uv, xy)
+      %   e = cam.projerror(uv, xyz, directions = false)
+      %
+      % Inputs:
+      %   uv         - Target image coordinates [x1 y1; ...]
+      %                An optional third column can contain weights
+      %   xy         - Normalized camera coordinates [x1 y1; ...]
+      %   xyz        - World coordinates [x1 y1 z1; ...]
+      %   directions - Whether xyz represents coordinates or ray directions
+      %
+      % Outputs:
+      %   e - Pixel errors between projected and target image coordinates [du1 dv1; ...]
+      %   d - Pixel distances between projected and target image coordinates
+      %
+      % See also project
+
+      if nargin < 4 || isempty(directions)
+        directions = false;
+      end
+      puv = cam.project(xyz, directions);
+      e = puv - uv(:, 1:2);
+      if size(uv, 2) > 2
+        e = e .* (uv(:, 3) / mean(uv(:, 3)));
+      end
+      if nargout > 1
+        d = sqrt(sum(e.^2, 2));
+      end
+    end
+
+    % function [newcam, fit] = optimize(cam, xyz, uv, freeparams)
+    %   % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
+    %   %
+    %   %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
+    %   %
+    %   % Uses an optimization routine to minize the root-mean-square reprojection
+    %   % error of image-world point correspondences (xyz, uv) by adjusting the
+    %   % specified camera parameters.
+    %   %
+    %   % If uv has three columns, the third column is interpreted as a weight
+    %   % in the misfit function.
+    %   %
+    %   % Inputs:
+    %   %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
+    %   %   uv         - Image coordinates [u1 v1; u2 v2; ...]
+    %   %                (optional 3rd column may specify weights)
+    %   %   freeparams - Either a string, array, or 20-element vector describing
+    %   %                which parameters should be optimized (see Examples).
+    %   %
+    %   % Outputs:
+    %   %   newcam - Optimized camera
+    %   %   rmse   - Root-mean-square reprojection error
+    %   %   aic    - Akaike information criterion for reprojection errors, which
+    %   %            can help determine an appropriate degree of complexity for
+    %   %            the camera model (i.e. avoid overfitting).
+    %   %            NOTE: Only strictly applicable for unweighted fitting.
+    %   %
+    %   % Examples:
+    %   %   % Optimize all elements of viewdir:
+    %   %   cam.optimizecam(xyz, uv, '00000111000000000000')
+    %   %   cam.optimizecam(xyz, uv, 'viewdir')
+    %   %   cam.optimizecam(xyz, uv, {'viewdir'})
+    %   %   % Also optimize the third (z) element of xyz:
+    %   %   cam.optimizecam(xyz, uv, '00100111000000000000')
+    %   %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
     %
+    %   [newcam, fit] = Camera.optimizeCams(cam, xyz, uv, freeparams);
+    %   newcam = newcam{1};
+    % end
+
     % function [newcam, fit] = optimizeR(cam, uv, uv2, angles)
     %   % Enforce defaults
     %   if nargin < 4
@@ -534,14 +851,14 @@ classdef Camera
     %   % Convert to ray directions
     %   dxyz = cam.invproject(uv);
     %   % Set up error function
-    %   flexparams = camera.parseFreeparams({'viewdir', angles});
-    %   fixparams = camera.parseFreeparams({});
+    %   flexparams = Camera.parseFreeparams({'viewdir', angles});
+    %   fixparams = Camera.parseFreeparams({});
     %   ray_direction = true;
-    %   ef = @(d) reshape(projerror(camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
+    %   ef = @(d) reshape(projerror(Camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
     %   % Optimize
     %   [d, rss] = LMFnlsq(ef, zeros(length(angles), 1));
     %   % Compile results
-    %   newcam = camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
+    %   newcam = Camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
     %   k = length(angles);
     %   n = size(uv, 1);
     %   fit = struct();
@@ -553,66 +870,6 @@ classdef Camera
     %   fit.bic = n .* log(rss ./ n) + 2 * k * log(n);
     %   % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
     % end
-
-    function e = projerror(cam, xyz, uv, ray_directions)
-      if size(xyz, 1) == 0 || size(uv, 1) == 0
-        e = [];
-        return
-      end
-      if nargin < 4
-        ray_directions = false;
-      end
-      puv = cam.project(xyz, ray_directions);
-      e = puv - uv(:, 1:2);
-      % e = sqrt(sum((puv - uv(:, 1:2)).^2, 2));
-      if size(uv, 2) > 2
-        e = e .* (uv(:, [3 3]) / mean(uv(:, 3)));
-        % e = e .* uv(:, 3) / mean(uv(:, 3));
-      end
-    end
-
-    function d = projdist(cam, xyz, uv, ray_directions)
-      if nargin < 4
-        ray_directions = false;
-      end
-      e = cam.projerror(xyz, uv, ray_directions);
-      d = sqrt(sum(e.^2, 2));
-    end
-
-    function [e, d] = projerror_nearest(cam, xyz, uv, ray_directions)
-      if size(xyz, 1) == 0 || size(uv, 1) == 0
-        e = [];
-        d = [];
-        return
-      end
-      if nargin < 4
-        ray_directions = false;
-      end
-      pts = [];
-      for i = 1:length(xyz)
-        [puv, infront] = cam.project(xyz{i}, ray_directions);
-        puv(~infront, :) = [];
-        if size(puv, 1) == 1
-          pts = [pts ; puv];
-        elseif size(puv, 1) > 1
-          l = polylineLength(puv);
-          pts = [pts ; clipPoints(unique(round(resamplePolyline(puv, ceil(l))), 'rows'), cam.framebox)];
-        end
-      end
-      [d, I] = min(pdist2(uv, pts, 'euclidean'), [], 2);
-      if size(pts, 1) > 0
-        e = pts(I, :) - uv;
-      else
-        e = uv; % HACK: In case all points are behind camera during optimization
-      end
-    end
-
-    function d = projdist_nearest(cam, xyz, uv, ray_directions)
-      if nargin < 4
-        ray_directions = false;
-      end
-      [~, d] = projerror_nearest(cam, xyz, uv, ray_directions);
-    end
 
     function [X, edge] = horizon(cam, dem, ddeg)
       if nargin < 3
@@ -629,68 +886,208 @@ classdef Camera
 
   methods (Static)
 
-    function freeparams = parseFreeparams(freeparams)
-      % Convert freeparams to boolean fullmodel selector
-      if ischar(freeparams)
-        % Convert to single-cell array
-        freeparams = {freeparams};
+    function selected = select_params(varargin)
+      % SELECT_PARAMS Generate a boolean fullmodel selector.
+      %
+      %   selected = Camera.select_params(...)
+      %   selected = Camera.select_params({...})
+      %   selected = Camera.select_params(params)
+      %
+      % Inputs:
+      %   ...    - Name-value pairs: '<name>', <elements>, ...
+      %            e.g. 'f', 'xyz', 3 => All f elements and 3rd xyz element
+      %   params - 20-element vector coercible to logical (1 and '1' = true)
+      %
+      % Outputs:
+      %   selected - 20-element logical vector of selected parameters
+
+      % Constants
+      param_names = {'xyz', 'imgsz', 'viewdir', 'f', 'c', 'k', 'p'};
+      param_indices = {[1:3], [4:5], [6:8], [9:10], [11:12], [13:18], [19:20]};
+      selected = false(size(cell2mat(param_indices)));
+      % Check inputs
+      params = varargin;
+      if isempty(params)
+        return
       end
-      if iscell(freeparams)
-        % Parse cell array (given as name-element pairs)
-        % e.g. {'viewdir', 'xyz', 3} => All viewdir elements and 3rd xyz element
-        params = {'xyz', 'imgsz', 'viewdir', 'f', 'c', 'k', 'p'};
-        param_indices = {[1:3], [4:5], [6:8], [9:10], [11:12], [13:18], [19:20]};
-        is_param = cellfun(@ischar, freeparams);
-        is_pos = cellfun(@isnumeric, freeparams);
-        is_free = false(max(cell2mat(param_indices)), 1);
-        for i = find(is_param)
-          is_match = strcmpi(freeparams{i}, params);
-          if any(is_match)
-            ind = param_indices{is_match};
-            if i < length(freeparams) && is_pos(i + 1)
-              ind = ind(freeparams{i + 1});
-            end
-            is_free(ind) = true;
+      if iscell(params{1})
+        params = params{1};
+      end
+      % If single non-matching object, attempt to coerce to logical indices
+      if length(params) == 1 && all(not(strcmpi(params{1}, params)))
+        selected = (params{1}(:) == 1 | params{1}(:) == '1')';
+        selected(end + 1:20) = false;
+        return
+      end
+      % Parse cell array (given as name-element pairs)
+      % e.g. {'viewdir', 'xyz', 3} => All viewdir elements and 3rd xyz element
+      is_param = cellfun(@ischar, params);
+      is_pos = cellfun(@isnumeric, params);
+      for i = find(is_param)
+        is_match = strcmpi(params{i}, params);
+        if any(is_match)
+          ind = param_indices{is_match};
+          if i < length(params) && is_pos(i + 1)
+            ind = ind(params{i + 1});
           end
+          selected(ind) = true;
         end
-        freeparams = is_free;
-      else
-        % Convert numeric or character string to logical
-        freeparams = ~(freeparams(:) == 0 | freeparams(:) == '0')';
       end
     end
 
-    function [newcams, fit] = optimizeCams(cams, xyz, uv, flexparams, fixparams, lxyz, luv, dmax)
+    function [e, d, puv] = projerror_bundle(cams, uv, xyz, luv, lxyz)
+      n = numel(cams);
+      [e, d, puv] = deal(cell(n, 1));
+      for i = 1:n
+        if ~isempty(uv{i}) && ~isempty(xyz{i})
+          e_pts = cams{i}.projerror(uv{i}, xyz{i});
+        end
+        if ~isempty(luv{i}) && ~isempty(lxyz{i})
+          if nargout < 2
+            e_lines = cams{i}.projerror_lines(luv{i}, lxyz{i});
+          else
+            [e_lines, puv{i}] = cams{i}.projerror_lines(luv{i}, lxyz{i});
+          end
+        end
+        e{i} = vertcat(e_pts, e_lines);
+        if nargout > 1
+          d{i} = sqrt(sum(e{i}.^2, 2));
+        end
+      end
+    end
 
-      % Enforce defaults
-      if nargin < 5
-        fixparams = {};
+    function cams = update_bundle(params, cams, is_flexible, is_fixed)
+      % params: n_fix + sum(n_flex)
+      n_flexible = sum(is_flexible, 2);
+      n_fixed = sum(is_fixed);
+      % Fullmodel template
+      temp = zeros(1, 20);
+      temp(is_fixed) = params(1:n_fixed);
+      temp(1:n_fixed) = [];
+      % Update each camera
+      for i = 1:length(cams)
+        model = temp;
+        model(is_flexible(i, :)) = params(1:n_flexible(i));
+        cams{i}.fullmodel = cams{i}.fullmodel + model;
+        % cams{i}.fullmodel = model;
+        params(1:n_flexible(i)) = [];
       end
-      if nargin < 7
-        lxyz = [];
-        luv = [];
+    end
+
+    function [newcams, fit] = optimize_bundle(cams, uv, xyz, luv, lxyz, flexparams, fixparams)
+      % Set free parameters
+      temp = cellfun(@Camera.select_params, flexparams, 'uniform', false);
+      is_flexible = vertcat(temp{:});
+      is_fixed = Camera.select_params(fixparams);
+      params_initial = zeros(sum(is_fixed) + sum(is_flexible(:)), 1);
+      % Optimize
+      function d = df(params)
+        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
+        [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
       end
-      if nargin < 8
-        dmax = [];
+      [params_final, ssq] = LMFnlsq(@df, params_initial);
+    end
+
+    function [newcams, fit] = optimize_images(images, flexparams, fixparams)
+      % Gather data
+      % cams: {cam, ...}, gcp_uv: {[], ...}, gcp_xyz: {[], ...}, gcl_uv: {[], ...}, gcl_xyz: {{[], ...}, ...}
+      cams = {images.cam};
+      uv = arrayfun(@(img) img.gcp.uv, images, 'uniform', false);
+      xyz = arrayfun(@(img) img.gcp.xyz, images, 'uniform', false);
+      luv = arrayfun(@(img) img.gcl.uv, images, 'uniform', false);
+      lxyz = arrayfun(@(img) img.gcl.xyz, images, 'uniform', false);
+      % Set free parameters
+      temp = cellfun(@Camera.select_params, flexparams, 'uniform', false);
+      is_flexible = vertcat(temp{:});
+      is_fixed = Camera.select_params(fixparams);
+      params_initial = zeros(sum(is_fixed) + sum(is_flexible(:)), 1);
+      % Optimize
+      function d = df(params)
+        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
+        [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
+        d = vertcat(d{:});
       end
+      [params_final, ssq] = LMFnlsq(@df, params_initial)
+      % Iterate
+
+      % (for best results, set dmax threshold)
+
+      % dmax = 10;
+      % for i_cam = 1:length(cams)
+      %   cam =
+      %   function d2 = df(params)
+      %     newcams = Camera.update_bundle(params, cams, is_flexible(i, :), is_fixed);
+      %     [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
+      %     d = vertcat(d{:});
+      %   end
+      % end
+      cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
+
+      function d = df2(params)
+        newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
+        [e, d] = Camera.projerror_bundle(newcams, uv, xyz, luv, lxyz);
+        d = vertcat(d{:});
+      end
+
+      original_lxyz = lxyz;
+      for iteration = 1:50
+        for i = 1:length(cams)
+          [~, ~, puv] = cams{i}.projerror_lines(luv{i}, lxyz{i});
+          lxyz{i} = cams{i}.xyz + cams{1}.invproject(puv);
+        end
+        previous_ssq = ssq;
+        [params_final, ssq] = LMFnlsq(@df2, params_initial)
+        if ssq > previous_ssq
+          break
+        end
+      end
+
+      % Compile results
+      newcams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
+      n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
+      e = Camera.projerror_bundle(newcams, uv, xyz, luv, original_lxyz);
+      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
+      % rss = cellfun(@(x) sum(x.^2), e);
+      fit = struct();
+      fit.rmse = sqrt(rss ./ n);
+      n = sum(n);
+      k = length(params_final);
+      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
+      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
+      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
+      fit.aic = n .* log(rss ./ n) + 2 * k .* (n ./ (n - k - 1));
+      fit.bic = n .* log(rss ./ n) + 2 * k .* log(n);
+      % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
+    end
+
+    function [newcams, fit] = optimizeCams(varargin)
+      % cams, gcp, gcp, gcl_uv, gcl_xyz flexparams, fixparams
+      % cams, gcp_uv, gcp_xyz, gcl_uv, gcl_xyz flexparams, fixparams
 
       % Convert inputs to cell arrays
-      if ~iscell(cams), cams = {cams}; end
-      if ~iscell(xyz), xyz = {xyz}; end
-      if ~iscell(uv), uv = {uv}; end
-      if ~iscell(lxyz), lxyz = {lxyz}; end
-      if ~iscell(luv), luv = {luv}; end
-      % Expand inputs
-      n_cams = length(cams);
-      if ~rem(n_cams, length(xyz)), xyz = repmat(xyz, 1, n_cams / length(xyz)); end
-      if ~rem(n_cams, length(uv)), uv = repmat(uv, 1, n_cams / length(uv)); end
-      if ~rem(n_cams, length(lxyz)), lxyz = repmat(lxyz, 1, n_cams / length(lxyz)); end
-      if ~rem(n_cams, length(luv)), luv = repmat(luv, 1, n_cams / length(luv)); end
-      if ~rem(n_cams, length(flexparams)), flexparams = repmat(flexparams, 1, n_cams / length(flexparams)); end
-      if any(n_cams ~= [length(xyz), length(uv), length(flexparams), length(lxyz), length(luv)])
-        error('Input arrays cannot be coerced to equal length')
+      for i = 1:4
+        if ~iscell(varargin{i})
+          varargin{i} = {varargin{i}};
+        end
       end
-
+      varargin
+      % Expand inputs
+      n_cams = length(varargin{1});
+      for i = 2:4
+        if ~rem(n_cams, length(varargin{i}))
+          varargin{i} = repmat(varargin{i}, 1, n_cams / length(varargin{i}));
+        end
+        if n_cams ~= length(varargin{i})
+          error('Input arrays cannot be coerced to equal length')
+        end
+      end
+      % Enforce defaults
+      if length(varargin) < 5
+        varargin{5} = [];
+      end
+      % Assign to variables
+      [cams, uv, xyz, flexparams, fixparams] = deal(varargin{1:5})
+      return
       % Discard invalid points
       for i = 1:length(xyz)
         if size(xyz{i}, 1) > 0
@@ -704,8 +1101,8 @@ classdef Camera
       end
 
       % Initialize
-      flexparams = cellfun(@camera.parseFreeparams, flexparams, 'UniformOutput', false);
-      fixparams = camera.parseFreeparams(fixparams);
+      flexparams = cellfun(@Camera.parseFreeparams, flexparams, 'UniformOutput', false);
+      fixparams = Camera.parseFreeparams(fixparams);
       n_flex = cellfun(@sum, flexparams);
       n_fix = sum(fixparams);
 
@@ -718,7 +1115,7 @@ classdef Camera
       mxyz = cellfun(@(x, y) [mat2cell(x, ones(size(x, 1), 1)); y], xyz, lxyz, 'UniformOutput', false);
       muv = cellfun(@(x, y) [x; y], uv, luv, 'UniformOutput', false);
       function d = df(m)
-        newcams = camera.updateCams(m, cams, flexparams, fixparams);
+        newcams = Camera.updateCams(m, cams, flexparams, fixparams);
         % d = reshape(cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false)), [], 1);
         % dmax = 2; w = 10;
         % d = cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false));
@@ -761,7 +1158,7 @@ classdef Camera
       [mbest, ssq] = LMFnlsq(@df, m0);
 
       % Compile results
-      newcams = camera.updateCams(mbest, cams, flexparams, fixparams);
+      newcams = Camera.updateCams(mbest, cams, flexparams, fixparams);
       n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
       % e = mat2cell(reshape(df(mbest), [], 2), n);
       % e = {reshape(df(mbest), [], 2)};
@@ -781,24 +1178,140 @@ classdef Camera
       % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
     end
 
-    function cams = updateCams(m, cams, flexparams, fixparams)
-      % Initialize
+    function [newcams, fit] = optimizeCams_old(cams, uv, xyz, flexparams, fixparams, luv, lxyz, dmax)
+
+      % Enforce defaults
+      if nargin < 5 || isempty(fixparams)
+        fixparams = {};
+      end
+      if nargin < 7
+        luv = [];
+        lxyz = [];
+      end
+      if nargin < 8
+        dmax = [];
+      end
+
+      % Convert inputs to cell arrays
+      convert = {'cams', 'uv', 'xyz', 'luv', 'lxyz'};
+      if ~iscell(cams), cams = {cams}; end
+      if ~iscell(uv), uv = {uv}; end
+      if ~iscell(xyz), xyz = {xyz}; end
+      if ~iscell(luv), luv = {luv}; end
+      if ~iscell(lxyz), lxyz = {lxyz}; end
+      % Expand inputs
       n_cams = length(cams);
+      if ~rem(n_cams, length(uv)), uv = repmat(uv, 1, n_cams / length(uv)); end
+      if ~rem(n_cams, length(xyz)), xyz = repmat(xyz, 1, n_cams / length(xyz)); end
+      if ~rem(n_cams, length(luv)), luv = repmat(luv, 1, n_cams / length(luv)); end
+      if ~rem(n_cams, length(lxyz)), lxyz = repmat(lxyz, 1, n_cams / length(lxyz)); end
+      if ~rem(n_cams, length(flexparams)), flexparams = repmat(flexparams, 1, n_cams / length(flexparams)); end
+      if any(n_cams ~= [length(uv), length(xyz), length(flexparams), length(luv), length(lxyz)])
+        error('Input arrays cannot be coerced to equal length')
+      end
+
+      % Discard invalid points
+      for i = 1:length(xyz)
+        if size(xyz{i}, 1) > 0
+          is_valid = cams{i}.infront(xyz{i}) & ~(any(isnan(xyz{i}), 2) | any(isnan(uv{i}), 2));
+          xyz{i} = xyz{i}(is_valid, :);
+          uv{i} = uv{i}(is_valid, :);
+          if size(xyz{i}, 1) == 0
+            error(['No valid control points found for camera ' str2num(i)]);
+          end
+        end
+      end
+
+      % Initialize
+      flexparams = cellfun(@Camera.parseFreeparams, flexparams, 'UniformOutput', false);
+      fixparams = Camera.parseFreeparams(fixparams);
       n_flex = cellfun(@sum, flexparams);
       n_fix = sum(fixparams);
-      % m -> fullmodel for each camera
-      temp = zeros(1, 20);
-      temp(fixparams) = m(1:n_fix);
-      m(1:n_fix) = [];
-      for i = 1:n_cams
-        d = temp;
-        d(flexparams{i}) = m(1:n_flex(i));
-        cams{i}.fullmodel = cams{i}.fullmodel + d;
-        m(1:n_flex(i)) = [];
+
+      % Optimize
+      if nargin < 7
+        has_lines = false;
+      else
+        has_lines = true;
       end
+      mxyz = cellfun(@(x, y) [mat2cell(x, ones(size(x, 1), 1)); y], xyz, lxyz, 'UniformOutput', false);
+      muv = cellfun(@(x, y) [x; y], uv, luv, 'UniformOutput', false);
+      function d = df(m)
+        newcams = Camera.updateCams(m, cams, flexparams, fixparams);
+        % d = reshape(cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false)), [], 1);
+        % dmax = 2; w = 10;
+        % d = cell2mat(cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false));
+        % dist = sqrt(sum(d.^2, 2));
+        % d(dist > dmax, :) = d(dist > dmax, :) * w;
+        % d = reshape(d, [], 1);
+      % end
+        if ~has_lines
+          % d = reshape(cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false)), [], 1);
+          d = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
+        else
+          % dp = cell2mat(cellfun(@projerror, newcams, xyz, uv, 'UniformOutput', false));
+          % dl = cell2mat(cellfun(@projerror_nearest, newcams, lxyz, luv, 'UniformOutput', false));
+          dp = cell2mat(cellfun(@projdist, newcams, xyz, uv, 'UniformOutput', false));
+          dl = cell2mat(cellfun(@projdist_nearest, newcams, lxyz, luv, 'UniformOutput', false));
+          % dl(sqrt(sum(dl.^2, 2)) > dmax, :) = sqrt(dmax^2 / 2);
+          d = [dp; dl];
+          % d = sum(sum(d.^2, 2));
+          % d = sign(d) .* (abs(d) > dmax);
+          % d = [dp; dl];
+          % d = sum(sqrt(sum(d.^2, 2)) > dmax);
+        end
+        if ~isempty(dmax)
+          dl(dl > dmax) = dmax;
+        end
+        d = reshape(d, [], 1);
+      end
+      m0 = zeros(n_fix + sum(n_flex), 1);
+      % xyz, viewdir, imgsz, f, c, k
+      % xtol = [5 5 5, 180 180 180, 100 100, 100 100, 100, 100, ];
+      % HACK: Attempts to find a stable solution by reducing XTol incrementally
+      % xtols = 2:-1:-7;
+      % [mbest, ssq0] = LMFnlsq(@df, m0, 'XTol', 10 ^ xtols(1));
+      % for xtol = xtols(2:end)
+      %   [mbest, ssq] = LMFnlsq(@df, mbest, 'XTol', 10 ^ xtol);
+      %   if abs(ssq - ssq0) < 1e-2
+      %     break
+      %   end
+      % end
+      [mbest, ssq] = LMFnlsq(@df, m0);
+
+      % Compile results
+      newcams = Camera.updateCams(mbest, cams, flexparams, fixparams);
+      n = cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv);
+      % e = mat2cell(reshape(df(mbest), [], 2), n);
+      % e = {reshape(df(mbest), [], 2)};
+      % e = {df(mbest)};
+      e = cellfun(@projerror_nearest, newcams, mxyz, muv, 'UniformOutput', false);
+      rss = cellfun(@(x) sum(sum(x.^2, 2)), e);
+      % rss = cellfun(@(x) sum(x.^2), e);
+      fit = struct();
+      fit.rmse = sqrt(rss ./ n);
+      n = sum(n);
+      k = n_fix + sum(n_flex);
+      % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
+      % AIC small sample correction: http://brianomeara.info/tutorials/aic/
+      % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
+      fit.aic = n .* log(rss ./ n) + 2 * k .* (n ./ (n - k - 1));
+      fit.bic = n .* log(rss ./ n) + 2 * k .* log(n);
+      % fit.mdl = n .* log(rss ./ n) + 1 ./ (2 * k .* log(n));
     end
 
     function scale = getScaleFromSize(original_size, target_size)
+      % GETSCALEFROMSIZE Calculate the scale that achieves a target size.
+      %
+      %   scale = Camera.getScaleFromSize(original_size, target_size)
+      %
+      % Inputs:
+      %   original_size - Starting image size [nx, ny]
+      %   target_size   - Target image size [nx, ny]
+      %
+      % Outputs:
+      %   scale - Scalar scale factor consistent with the target size.
+
       original_size = round(original_size);
       target_size = round(target_size);
       if all(original_size == target_size)
@@ -813,11 +1326,11 @@ classdef Camera
       end
     end
 
-    function sensorsz = sensorSize(varargin)
+    function sensorsz = getSensorSize(varargin)
       % SENSORSIZE Get the sensor size of a digital camera model.
       %
-      %   sensorsz = sensorSize(makemodel)
-      %   sensorsz = sensorSize(make, model)
+      %   sensorsz = Camera.getSensorSize(makemodel)
+      %   sensorsz = Camera.getSensorSize(make, model)
       %
       % Returns the CCD sensor width and height in mm for the specified camera.
       % Data is from Digital Photography Review (https://dpreview.com).
@@ -829,31 +1342,29 @@ classdef Camera
       %   model     - Camera model
       %
       % Outputs:
-      %   sensorsz - sensor size in mm [width, height]
+      %   sensorsz - Sensor size in mm [width, height]
 
       % Check inputs
       if nargin < 1
         error('Specify make & model of camera.')
       end
+      makemodel = deblank(strtrim(varargin{1}));
       if nargin > 1
-        makemodel = [deblank(strtrim(varargin{1})) ' ' deblank(strtrim(varargin{2}))];
+        makemodel = [makemodel, ' ', deblank(strtrim(varargin{2}))];
       end
-
       % Load sensor sizes (mm)
       sensor_sizes = {
         'NIKON CORPORATION NIKON D2X', [23.7 15.7]; % https://www.dpreview.com/reviews/nikond2x/2
         'NIKON CORPORATION NIKON D200', [23.6 15.8]; % https://www.dpreview.com/reviews/nikond200/2
       };
-
       % Check for match
-      match = find(strcmp(makemodel, sensor_sizes(:, 1)));
-
+      match = find(strcmpi(makemodel, sensor_sizes(:, 1)));
       % If match found, return sensor size
-      if ~isempty(match)
-        sensorsz = sensor_sizes{match, 2};
-      else
-        warning(['No sensor size found for "' makemodel '". Returning [].']);
+      if isempty(match)
+        warning(['No sensor size found for "' makemodel '".']);
         sensorsz = [];
+      else
+        sensorsz = sensor_sizes{match, 2};
       end
     end
 
@@ -862,18 +1373,19 @@ classdef Camera
   methods (Access = private)
 
     function xy = distort(cam, xy)
-      % DISTORT  Apply radial and tangential lens distortion to normalized camera coordinates.
+      % DISTORT Apply distortion to normalized camera coordinates.
       %
-      %   xy = distort(xy)
+      %   xy = cam.distort(xy)
       %
       % Inputs:
-      %   xy - normalized camera coordinates [x1 y1; x2 y2; ...]
+      %   xy - Normalized camera coordinates [x1 y1; ...]
       %
       % Outputs:
-      %   xy - distorted normalized camera coordinates [x1 y1; x2 y2; ...]
+      %   xy - Distorted normalized camera coordinates [x1 y1; ...]
+      %
+      % See also undistort
 
       if any([cam.k, cam.p])
-        % r = sqrt(x^2 + y^2)
         r2 = sum(xy.^2, 2);
         if any(cam.k)
           % Radial lens distortion
@@ -895,7 +1407,7 @@ classdef Camera
         % x' = dr * x + dtx
         % y' = dr * y + dty
         if any(cam.k)
-          xy = bsxfun(@times, xy, dr);
+          xy = xy .* dr;
         end
         if any(cam.p)
           xy = xy + [dtx dty];
@@ -904,23 +1416,23 @@ classdef Camera
     end
 
     function xy = undistort(cam, xy)
-      % UNDISTORT  Undo radial and tangential lens distortion on normalized camera coordinates.
+      % UNDISTORT Undo distortion on normalized camera coordinates.
       %
-      %   xy = undistort(xy)
+      %   xy = cam.undistort(xy)
       %
       % Inputs:
-      %   xy - distorted normalized camera coordinates [x1 y1; x2 y2; ...]
+      %   xy - Distorted normalized camera coordinates [x1 y1; ...]
       %
       % Outputs:
-      %   xy - normalized camera coordinates [x1 y1; x2 y2; ...]
+      %   xy - normalized camera coordinates [x1 y1; ...]
+      %
+      % See also distort
 
       if any([cam.k, cam.p])
-
         % May fail for large negative k1.
         if cam.k(1) < -0.5
           warning(['Large, negative k1 (', num2str(cam.k(1), 3), '). Undistort may fail.'])
         end
-
         % If only k1 is nonzero, use closed form solution.
         % Cubic roots solution from Numerical Recipes in C 2nd Edition:
         % http://apps.nrbook.com/c/index.html (pages 183-185)
@@ -940,12 +1452,10 @@ classdef Camera
           end
           xy = [r .* cos(phi), r .* sin(phi)];
           xy = real(xy);
-
         % Otherwise, use iterative solution.
         else
           xyi = xy; % initial guess
           for n = 1:20
-            % r = sqrt(x^2 + y^2)
             r2 = sum(xy.^2, 2);
             if any(cam.k)
               % Radial lens distortion
@@ -967,12 +1477,12 @@ classdef Camera
             % x = (x' - dtx) / dr
             % y = (y' - dty) / dr
             if any(cam.p)
-              xy = xyi - [dtx dty];
+              xy = xyi - [dtx, dty];
               if any(cam.k)
-                xy = bsxfun(@rdivide, xy, dr);
+                xy = xy ./ dr;
               end
             else
-              xy = bsxfun(@rdivide, xyi, dr);
+              xy = xyi ./ dr;
             end
           end
         end
