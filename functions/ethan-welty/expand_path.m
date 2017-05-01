@@ -14,7 +14,7 @@ function files = expand_path(path, relative)
   end
   results = dir(path);
   if relative && exist('relativepath', 'file')
-    paths = cellfun(@relativepath, {results.folder}, 'UniformOutput', false);
+    paths = cellfun(@relativepath, {results.folder}, 'uniform', false);
   else
     paths = {results.folder};
   end
