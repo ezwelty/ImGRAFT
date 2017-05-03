@@ -32,7 +32,7 @@ classdef Image
     gcl = struct('uv', [], 'xyz', []);
     fixedpolys = {};
     freepolys = {};
-    anchor = [];
+    anchor = 0;
   end
 
   properties (SetAccess = private)
@@ -262,8 +262,46 @@ classdef Image
       end
       I = imread(img.file);
       if ~isempty(scale) && scale ~= 1
-        I = imresize(I, img.scale);
+        I = imresize(I, scale);
       end
+    end
+
+    function plot(img, control, polys)
+      if nargin < 2 || isempty(control)
+        control = false;
+      end
+      if nargin < 3 || isempty(polys)
+        polys = false;
+      end
+      imshow(img.read());
+      hold on
+      if control
+        % Point errors
+        if ~isempty(img.gcp.uv) && ~isempty(img.gcp.xyz)
+          duv = img.cam.projerror(img.gcp.uv, img.gcp.xyz);
+          plot(img.gcp.uv(:, 1), img.gcp.uv(:, 2), 'g*');
+          quiver(img.gcp.uv(:, 1), img.gcp.uv(:, 2), duv(:, 1), duv(:, 2), 0, 'r');
+        end
+        % Line errors
+        if ~isempty(img.gcl.uv) && ~isempty(img.gcl.xyz)
+          plot(img.gcl.uv(:, 1), img.gcl.uv(:, 2), 'g.');
+          duv = img.cam.projerror_lines(img.gcl.uv, img.gcl.xyz);
+          quiver(img.gcl.uv(:, 1), img.gcl.uv(:, 2), duv(:, 1), duv(:, 2), 0, 'r');
+          for i_line = 1:length(img.gcl.xyz)
+            pluv = img.cam.project(img.gcl.xyz{i_line});
+            plot(pluv(:, 1), pluv(:, 2), 'y-');
+          end
+        end
+      end
+      if polys
+        for poly = img.fixedpolys
+          plot(poly{1}(:, 1), poly{1}(:, 2), 'y:');
+        end
+        for poly = img.freepolys
+          plot(poly{1}(:, 1), poly{1}(:, 2), 'y:');
+        end
+      end
+      hold off
     end
 
   end % methods

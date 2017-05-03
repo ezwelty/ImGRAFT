@@ -97,6 +97,8 @@ for i = has_lines
 end
 
 %% Format fixed (land) and free (glacier) polygons
+% freepolys = {[x1 y1 z1; ...], ...}
+% fixedpolys = {[x1 y1 z1; ...], ...}
 for i = 1:length(images)
   if isfield(images(i).svg, SVG_LAND)
     for j = fieldnames(images(i).svg.(SVG_LAND))'
@@ -119,23 +121,9 @@ fixparams = {'f', 'k', [1 2]};
 [anchors, fit] = Camera.optimize_images(images(is_anchor), flexparams, fixparams, 10);
 
 % Review results
-fit
 for i = 1:length(anchors)
   figure();
-  imshow(anchors(i).read());
-  hold on
-  % Point errors
-  duv = anchors(i).cam.projerror(uv{i}, xyz{i});
-  plot(uv{i}(:, 1), uv{i}(:, 2), 'g*');
-  s = 1; quiver(uv{i}(:, 1), uv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'r');
-  % Line errors
-  plot(luv{i}(:, 1), luv{i}(:, 2), 'g.');
-  duv = anchors(i).cam.projerror_lines(luv{i}, lxyz{i});
-  s = 1; quiver(luv{i}(:, 1), luv{i}(:, 2), s * duv(:, 1), s * duv(:, 2), 0, 'r');
-  for j = 1:length(lxyz{i})
-    pluv = anchors(i).cam.project(lxyz{i}{j});
-    plot(pluv(:, 1), pluv(:, 2), 'y-');
-  end
+  anchors(i).plot(true);
   title(['\fontsize{14} ', num2str(anchor_ind(i)), ': RMSE ', num2str(fit.rmse(i), '%.2f'), 'px']);
 end
 
@@ -151,80 +139,226 @@ for i = find(~is_anchor)
   images(i).anchor = anchor_ind(i_min);
 end
 
-%% --- Calibrate images from anchors ---
+%% --- Orient images from anchors ---
+% Match features between image and anchor, filter with RANSAC, and optimize orientation.
+% TODO: Support variable image sizes
 
-rmse = [];
+fits = cell(size(images));
 for i = find(~is_anchor)
   I = images(i).read();
   i0 = images(i).anchor;
-  I0 = images(i0).read;
+  I0 = images(i0).read();
   % Generate grid of points in land polygons
-  % TODO: Move to outside loop
-  gdu = 50; gdv = 50;
-  mpu = []; mpv = []; mdu = []; mdv = [];
-  
-  for j = 1:length(images(i0).land)
-
-    [du, dv] = templatematch(I0, I, pu, pv, 'templatewidth', gdu, 'searchwidth', 4 * gdu);
-    mpu = [mpu ; pu]; mpv = [mpv ; pv]; mdu = [mdu ; du]; mdv = [mdv ; dv];
+  % TODO: Move outside loop
+  % TODO: Switch to keypoints matching
+  [gdu, gdv] = deal(50);
+  matches = [];
+  for j = 1:length(images(i0).fixedpolys)
+    pts = polygon2grid(images(i0).fixedpolys{j}, gdu, gdv);
+    [du, dv] = templatematch(I0, I, pts(:, 1), pts(:, 2), 'templatewidth', gdu, 'searchwidth', 5 * gdu);
+    matches = vertcat(matches, horzcat(pts, du, dv));
   end
-  % Plot matches
-  figure
-  imshow(I0 / 1.5); hold on;
-  s = 2; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'y')
-  % Filter matches with RANSAC Fundamental Matrix
-  nonans = ~(isnan(mdu) | isnan(mdv));
-  mpu = mpu(nonans); mpv = mpv(nonans);
-  mdu = mdu(nonans); mdv = mdv(nonans);
-  A = images(i0).cam.image2camera([mpu, mpv]);
-  B = images(i0).cam.image2camera([mpu + mdu, mpv + mdv]);
-  % TODO: Tricky to set threshold (re-express in pixels?)
-  [F, inliersF] = ransacfitfundmatrix(A', B', 0.0000005);
-  % [H, inliersH] = ransacfithomography(A', B', 0.00000005);
+  matches(any(isnan(matches), 2), :) = [];
+  % Filter matches with RANSAC
+  % FIXME: Assumes images are the same size and camera
+  xy0 = images(i0).cam.image2camera(matches(:, 1:2));
+  xy = images(i0).cam.image2camera(matches(:, 1:2) + matches(:, 3:4));
+  % TODO: Express threshold in pixels
+  [F, in] = ransacfitfundmatrix(xy0', xy', 0.0000005);
+  mean_motion = mean(sqrt(sum(matches(in, 3:4).^2, 2)));
   % Plot filtered matches
   figure
-  imshow(I0 / 1.5); hold on;
-  s = 2; quiver(mpu, mpv, s * mdu, s * mdv, 0, 'r')
-  s = 2; quiver(mpu(inliersF), mpv(inliersF), s * mdu(inliersF), s * mdv(inliersF), 0, 'y')
-  % s = 100; quiver(mpu(inliersH), mpv(inliersH), s * mdu(inliersH), s * mdv(inliersH), 0, 'y')
-  % Orient image
-  [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersF), mpv(inliersF)], [mpu(inliersF) + mdu(inliersF), mpv(inliersF) + mdv(inliersF)]);
-  % [newcam, fit] = images(i0).cam.optimizeR([mpu(inliersH), mpv(inliersH)], [mpu(inliersH) + mdu(inliersH), mpv(inliersH) + mdv(inliersH)])
-  rmse(i) = fit.rmse;
-  images(i).cam = newcam;
-  % Plot transformed traces
-  figure()
-  imshow(I / 1.5), hold on
-  for j = fieldnames(images(i0).svg.horizon)'
-    puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.horizon.(j{1})), true);
-    plot(puv(:, 1), puv(:, 2), 'r-')
+  imshow(I0 / 1.5), hold on
+  s = 1;
+  quiver(matches(:, 1), matches(:, 2), matches(:, 3), matches(:, 4), 0, 'r');
+  quiver(matches(in, 1), matches(in, 2), matches(in, 3), matches(in, 4), 0, 'y');
+  title([num2str(i0), ' -> ', num2str(i)]);
+  % Orient camera
+  % FIXME: Assumes images are the same size and camera
+  % TODO: Retrieve rotation from F?
+  % TODO: Write dedicated orientation function using normalized camera coordinates
+  if mean_motion > 1
+    [newcams, fits{i}] = Camera.optimize_bundle(images(i0).cam, matches(in, 1:2) + matches(in, 3:4), images(i0).cam.xyz + images(i0).cam.camera2world(xy0(in, :)), 'viewdir');
+    images(i).cam = newcams{1};
+  else
+    images(i).cam = images(i0).cam;
   end
-  for j = fieldnames(images(i0).svg.coast)'
-    puv = images(i).cam.project(images(i0).cam.invproject(images(i0).svg.coast.(j{1})), true);
-    plot(puv(:, 1), puv(:, 2), 'r-')
-  end
-  % Transform glacier polygons
-  images(i).glacier = {};
-  for j = 1:length(images(i0).glacier)
-    images(i).glacier{j} = images(i).cam.project(images(i0).cam.invproject(images(i0).glacier{j}), true);
-    % plot(images(i).glacier{j}(:, 1), images(i).glacier{j}(:, 2), 'b-')
+  % Transform free polygons
+  for j = 1:length(images(i0).freepolys)
+    images(i).freepolys{j} = images(i).cam.project(images(i0).cam.invproject(images(i0).freepolys{j}), true);
   end
 end
 
-%% Visualize motion correction
-i0 = find(is_anchor, 1);
-scale = 0.2;
-cam0 = images(i0).cam.resize(scale);
-[x0, y0] = meshgrid(1:cam0.imgsz(1), 1:cam0.imgsz(2));
-Xi0 = [x0(:), y0(:)];
-imwrite(imresize(rgb2gray(imread(images(i0).path)), flip(cam0.imgsz)), [num2str(i0) '-anchor.jpg']);
-for i = find(~is_anchor)
-  cam = images(i).cam.resize(scale);
-  % Project reference grid to new image
-  Xi = cam.project(cam0.invproject(Xi0), true);
-  % Interpolate image at points
-  I = imresize(rgb2gray(imread(images(i).path)), flip(cam.imgsz));
-  Zi = interp2(double(I), Xi(:, 1), Xi(:, 2));
-  I0 = uint8(reshape(Zi, flip(cam0.imgsz)));
-  imwrite(I0, [num2str(i) '.jpg']);
+%% --- Save aligned images ---
+% TODO: Undistort images at the same time?
+% TODO: Support variable image sizes
+% TODO: Wrap into function
+
+mkdir(OUT_DIR, 'aligned');
+for i0 = find(is_anchor)
+  % Copy file
+  [~, filename, ext] = fileparts(images(i0).file);
+  outfile = fullfile(OUT_DIR, 'aligned', [num2str(i0), '-', num2str(i0), '-', filename, ext]);
+  copyfile(images(i0).file, outfile);
+  % Prepare reference grid
+  [u, v] = meshgrid(0.5:(images(i0).cam.imgsz(1) - 0.5), 0.5:(images(i0).cam.imgsz(2) - 0.5));
+  uv = [u(:), v(:)];
+  dxyz = images(i0).cam.invproject(uv);
+  for i = find([images.anchor])
+    % Project reference grid to new image
+    puv = images(i).cam.project(dxyz, true);
+    % Interpolate image at projected grid points
+    I = double(images(i).read());
+    I0 = uint8(nan(size(I)));
+    for channel = 1:size(I, 3)
+      temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2));
+      I0(:, :, channel) = reshape(temp, flip(images(i0).cam.imgsz));
+    end
+    % Save to file
+    [~, filename, ext] = fileparts(images(i).file);
+    outfile = fullfile(OUT_DIR, 'aligned', [num2str(i), '-', num2str(i0), '-', filename, ext]);
+    imwrite(I0, outfile, 'Quality', 100);
+  end
 end
+
+%% --- Match moving features ----
+% Uses the Farneback optical flow method
+% see: https://www.mathworks.com/help/vision/ref/opticalflowfarneback-class.html
+
+% Set image used as coordinate reference
+i_ref = 1;
+% TODO: Use reference velocity field to initialize and constrict search
+obj = opticalFlowFarneback('NumPyramidLevels', 5, 'NeighborhoodSize', 3, 'FilterSize', 25);
+
+% Match glacier features between consecutive image pairs
+flow = cell(length(images));
+for i = 1:length(images)
+  I = rgb2gray(images(i).read(scale));
+  flow{i} = obj.estimateFlow(I);
+end
+
+% Generate glacier points
+[gdx, gdy] = deal(50);
+i0 = 1;
+for poly = images(i0).freepolys
+  dxyz = images(i0).cam.invproject(poly{:});
+  gxyz = nan(size(dxyz));
+  for i_pt = 1:size(gxyz, 1)
+    X = smdem.sample_ray_tri(images(i0).cam.xyz, dxyz(i_pt, :));
+    if ~isempty(X)
+      gxyz(i_pt, :) = X;
+    end
+  end
+
+  smdem2 = smdem.resize(0.1).build();
+
+  i_pt = 1;
+  origin = images(i0).cam.xyz + [0, 0, 100];
+  direction = dxyz(i_pt, :);
+  X = smdem2.sample_ray_tri(origin, direction, false)
+  smdem2.plot(3);
+  hold on
+  plot3(origin(1), origin(2), origin(3), 'k*');
+  quiver3(origin(1), origin(2), origin(3), 1e4 * direction(1), 1e4 * direction(2), 1e4 * direction(3), 0, 'k');
+  plot3(X(:, 1), X(:, 2), X(:, 3), 'r*');
+  hold off
+
+  % plane = [0 0 -1 50];
+  % gxyz = intersectRayPlane(images(i0).cam.xyz, dxyz, plane);
+  smdem.plot(2)
+  hold on
+  plot(gxyz(:, 1), gxyz(:, 2), 'r*');
+
+end
+
+smdem.plot(2);
+hold on
+plot(gpts(:, 1), gpts(:, 2), 'r*');
+
+
+for i0 = 1:(length(images) - 1)
+  % Starting positions (image i0)
+  mask = zeros(flip(images(i0).cam.imgsz));
+  for j = 1:length(images(i0).freepolys)
+    mask = mask | poly2mask(images(i0).freepolys{j}(:, 1), images(i0).freepolys{j}(:, 2), images(i0).cam.imgsz(2), images(i0).cam.imgsz(1));
+  end
+  [yi, xi] = find(mask);
+  uv0 = [xi, yi];
+  % Ending positions (image i)
+  i = i0 + 1;
+  du = flow{i}.Vx;
+  dv = flow{i}.Vy;
+  duv = [du(mask), dv(mask)];
+  uv = uv0 + duv;
+
+  figure();
+  imshow(images(i).read());
+  hold on
+  quiver(uv0(ind, 1), uv0(ind, 2), duv(ind, 1), duv(ind, 2), 0, 'y');
+
+  % Reduce and convert to world coordinates
+  ind = round(rand(1e6, 1) * size(uv0, 1));
+  plane = [0 0 -1 50];
+  dxyz0 = images(i0).cam.invproject(uv0(ind, :));
+  xyz0 = intersectRayPlane(images(i0).cam.xyz, dxyz0, plane);
+  dxyz = images(i).cam.invproject(uv(ind, :));
+  xyz = intersectRayPlane(images(i).cam.xyz, dxyz, plane);
+
+  % smdem.plot(2);
+  figure();
+  showimg(smdem.x, smdem.y, hillshade(smdem.Z, smdem.x, smdem.y));
+  hold on
+  ddays = images(i).date_num - images(i0).date_num;
+  v = sqrt(sum((xyz - xyz0).^2, 2)) / ddays;
+  [x, y, Z] = pts2grid(xyz0(:, 1), xyz(:, 2), v, 100, 100);
+  [X, Y] = meshgrid(x, y);
+  alphawarp(X, Y, Z, 1);
+  caxis([0 10]);
+  colormap jet;
+  colorbar
+
+
+
+
+
+  s = 4;
+  quiver(xyz0(:, 1), xyz0(:, 2), s * (xyz(:, 1) - xyz0(:, 1)) / ddays, s * (xyz(:, 2) - xyz0(:, 2)) / ddays, 0, 'r');
+end
+
+%% --- Match moving features (deprecated) ----
+
+% Set image used as coordinate reference
+i_ref = 1;
+
+% Generate grid of points in glacier polygons
+guv = [];
+[du, dv] = deal(50);
+for j = 1:length(images(i_ref).freepolys)
+  guv = [guv; polygon2grid(images(i_ref).freepolys{j}, du, dv)];
+end
+gdxyz = images(i_ref).cam.invproject(guv);
+
+% Match glacier features between consecutive image pairs
+matches = cell(length(images) - 1, 1);
+for i0 = 1:(length(images) - 1)
+  % Prepare first image
+  I0 = images(i0).read();
+  p0 = images(i0).cam.project(gdxyz, true);
+  % Prepare second image
+  i = i0 + 1;
+  I = images(i).read();
+  p = images(i).cam.project(gdxyz, true);
+  % Match points
+  % TODO: Use reference velocity field to initialize and constrict search
+  % TODO: Try matching methods that account for rotation
+  [du, dv] = templatematch(I0, I, p0(:, 1), p0(:, 2), 'templatewidth', 50, 'searchwidth', 250,'initialdu', p(:, 1) - p0(:, 1), 'initialdv', p(:, 2) - p0(:, 2), 'supersample', 1, 'method', 'OC');
+  dxyz = images(i).cam.invproject(p0 + [du, dv]);
+  matches{i0} = images(i_ref).cam.project(dxyz, true);
+end
+
+i = 1;
+figure();
+imshow(images(i_ref).read());
+hold on
+duv = matches{i} - guv;
+quiver(guv(:, 1), guv(:, 2), duv(:, 1), duv(:, 2), 0, 'y');

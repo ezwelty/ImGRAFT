@@ -1004,31 +1004,35 @@ classdef Camera
     end
 
     function [newcams, fit] = optimize_bundle(varargin)
-      % cams, uv, xyz, luv, lxyz, flexparams, fixparams, ldmax
+      % cams, uv, xyz, flexparams, fixparams, luv, lxyz, ldmax
+      % Enforce defaults
+      if length(varargin) < 4
+        error('Not enough input arguments.');
+      end
+      defaults = {[], [], [], [], [], [], [], Inf};
+      for i = 5:8
+        if i > length(varargin) || isempty(varargin{i})
+          varargin{i} = defaults{i};
+        end
+      end
       % Convert inputs to cell arrays
-      for i = 1:6
+      for i = [1:4, 6:7]
         if ~iscell(varargin{i})
           varargin{i} = {varargin{i}};
         end
       end
       % Expand inputs
       n_cams = length(varargin{1});
-      for i = 2:6
+      for i = [2:4, 6:7]
         if ~rem(n_cams, length(varargin{i}))
           varargin{i} = repmat(varargin{i}, 1, n_cams / length(varargin{i}));
         end
         if n_cams ~= length(varargin{i})
-          error('Input arrays cannot be coerced to equal length');
+          error('Input arrays cannot be coerced to equal length.');
         end
       end
-      % Enforce defaults
-      if length(varargin) < 7
-        varargin{7} = [];
-      end
-      if length(varargin) < 8
-        varargin{8} = Inf;
-      end
-      [cams, uv, xyz, luv, lxyz, flexparams, fixparams, ldmax] = deal(varargin{1:8});
+      % Assign inputs
+      [cams, uv, xyz, flexparams, fixparams, luv, lxyz, ldmax] = deal(varargin{1:8});
       % Set free parameters
       temp = cellfun(@Camera.select_params, flexparams, 'uniform', false);
       is_flexible = vertcat(temp{:});
@@ -1044,7 +1048,7 @@ classdef Camera
       [params_final, ssq] = LMFnlsq(@ef, params_initial);
       cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
       % Optimize (iterate)
-      fprintf('Refining ...         ');
+      fprintf('Refining...         ');
       has_lines = find(not(cellfun('isempty', luv)) & not(cellfun('isempty', lxyz)));
       function d = ef2(params)
         newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
@@ -1118,7 +1122,7 @@ classdef Camera
         luv = arrayfun(@(img) img.gcl.uv, images, 'uniform', false);
       end
       % Optimize cameras
-      [newcams, fit] = Camera.optimize_bundle(cams, uv, xyz, luv, lxyz, flexparams, fixparams, ldmax);
+      [newcams, fit] = Camera.optimize_bundle(cams, uv, xyz, flexparams, fixparams, luv, lxyz, ldmax);
       % Save new cameras
       for i = 1:length(newcams)
         images(i).cam = newcams{i};
