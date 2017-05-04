@@ -1,4 +1,4 @@
-function [xvec, yvec, zgrid] = pts2grid(x, y, z, dx, dy)
+function [X, Y, Z] = pts2grid(x, y, z, dx, dy)
 
   % Process point set
   [xmin, xi] = min(x);
@@ -24,11 +24,12 @@ function [xvec, yvec, zgrid] = pts2grid(x, y, z, dx, dy)
   N = length(u);
   uz = zeros(N, 1);
   for i = 1:N
-    uz(i) = mean(sz(I(i):(I(i + 1) - 1)));
+    uz(i) = nanmean(sz(I(i):(I(i + 1) - 1)));
   end
 
   % Grid points
-  zgrid = nan(ny, nx);
-  zgrid(u) = uz;
-  xvec = min(xlim):dx:(max(xlim));
-  yvec = max(ylim):-dy:min(ylim)';
+  Z = nan(ny, nx);
+  Z(u) = uz;
+  xv = (min(xlim) + dx / 2):dx:(max(xlim) - dx / 2);
+  yv = (max(ylim) - dy / 2):-dy:(min(ylim) + dy / 2);
+  [X, Y] = meshgrid(xv, yv);

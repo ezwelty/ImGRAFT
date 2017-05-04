@@ -58,7 +58,7 @@ end
 
 %% Load DEM
 % Crop to camera view
-% FIXME: Won't work if camera missing initial view direction
+% FIXME: Won't work if camera missing initial view direction and position
 box = images(1).cam.viewbox(DEM_DISTANCE);
 dem = DEM(DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(DEM_SCALE).build();
 smdem = dem.smooth(DEM_SMOOTH_WIDTH).build();
@@ -67,8 +67,12 @@ smdem = dem.smooth(DEM_SMOOTH_WIDTH).build();
 % FIXME: Slow
 % TODO: Cache results by CAM_ID
 % TODO: Traverse grid in concentric circles or triangular wedges
-% HORIZON = dem.horizon(cam.xyz, 0:0.1:359);
-HORIZON = images(1).cam.horizon(dem, 0.1);
+% FIXME: Won't work if camera missing initial position
+if isempty(cam.viewdir)
+  HORIZON = dem.horizon(cam.xyz, 0:0.1:359);
+else
+  HORIZON = images(1).cam.horizon(dem, 0.1);
+end
 
 %% Format "GCL" (ground control lines)
 % gcl.uv : [u1 v1; ... ] (as point matrix)
@@ -211,7 +215,7 @@ for i0 = find(is_anchor)
     I = double(images(i).read());
     I0 = uint8(nan(size(I)));
     for channel = 1:size(I, 3)
-      temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2));
+      temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2), '*linear');
       I0(:, :, channel) = reshape(temp, flip(images(i0).cam.imgsz));
     end
     % Save to file
@@ -225,56 +229,89 @@ end
 % Uses the Farneback optical flow method
 % see: https://www.mathworks.com/help/vision/ref/opticalflowfarneback-class.html
 
-% Set image used as coordinate reference
-i_ref = 1;
-% TODO: Use reference velocity field to initialize and constrict search
-obj = opticalFlowFarneback('NumPyramidLevels', 5, 'NeighborhoodSize', 3, 'FilterSize', 25);
-
 % Match glacier features between consecutive image pairs
+obj = opticalFlowFarneback('NumPyramidLevels', 5, 'NeighborhoodSize', 3, 'FilterSize', 25);
 flow = cell(length(images));
 for i = 1:length(images)
-  I = rgb2gray(images(i).read(scale));
+  I = rgb2gray(images(i).read());
   flow{i} = obj.estimateFlow(I);
 end
 
 % Generate glacier points
-[gdx, gdy] = deal(50);
+smdem = dem.resize(0.125).smooth(300).build();
+[gdx, gdy] = deal(10);
+gxyz = [];
 i0 = 1;
 for poly = images(i0).freepolys
-  dxyz = images(i0).cam.invproject(poly{:});
-  gxyz = nan(size(dxyz));
-  for i_pt = 1:size(gxyz, 1)
-    X = smdem.sample_ray_tri(images(i0).cam.xyz, dxyz(i_pt, :));
-    if ~isempty(X)
-      gxyz(i_pt, :) = X;
-    end
+  xyz = images(i0).cam.invproject(poly{:});
+  for i_pt = 1:size(xyz, 1)
+    xyz(i_pt, :) = smdem.sample_ray_tri(images(i0).cam.xyz, xyz(i_pt, :), true);
   end
-
-  smdem2 = smdem.resize(0.1).build();
-
-  i_pt = 1;
-  origin = images(i0).cam.xyz + [0, 0, 100];
-  direction = dxyz(i_pt, :);
-  X = smdem2.sample_ray_tri(origin, direction, false)
-  smdem2.plot(3);
-  hold on
-  plot3(origin(1), origin(2), origin(3), 'k*');
-  quiver3(origin(1), origin(2), origin(3), 1e4 * direction(1), 1e4 * direction(2), 1e4 * direction(3), 0, 'k');
-  plot3(X(:, 1), X(:, 2), X(:, 3), 'r*');
-  hold off
-
-  % plane = [0 0 -1 50];
-  % gxyz = intersectRayPlane(images(i0).cam.xyz, dxyz, plane);
-  smdem.plot(2)
-  hold on
-  plot(gxyz(:, 1), gxyz(:, 2), 'r*');
-
+  gxy = polygon2grid(xyz, gdx, gdy);
+  z = smdem.sample_points_tri(gxy);
+  gxyz0 = [gxy, z];
+  uv = images(i0).cam.project(gxyz0);
+  gxyz1 = images(i0).cam.invproject(uv);
+  for i_pt = 1:size(gxyz1, 1)
+    gxyz1(i_pt, :) = smdem.sample_ray_tri(images(i0).cam.xyz, gxyz1(i_pt, :), true);
+  end
+  visible = sqrt(sum((gxyz1 - gxyz0).^2, 2)) < 1;
+  gxyz = [gxyz; [gxyz0(visible, :)]];
 end
 
-smdem.plot(2);
+figure()
+smdem.plot(2)
 hold on
-plot(gpts(:, 1), gpts(:, 2), 'r*');
+plot(gxyz(:, 1), gxyz(:, 2), 'r*');
+guv = images(i0).cam.project(gxyz);
+figure()
+images(i0).plot();
+hold on
+plot(guv(:, 1), guv(:, 2), 'r*')
 
+% Sample motion at glacier points
+for i0 = 1:(length(images) - 1)
+  i = i0 + 1;
+  % Starting positions (i0)
+  uv0 = images(i0).cam.project(gxyz);
+  [u, v] = meshgrid(0.5:(images(i0).cam.imgsz(1) - 0.5), 0.5:(images(i0).cam.imgsz(2) - 0.5));
+  du = interp2(u, v, flow{i}.Vx, uv0(:, 1), uv0(:, 2), '*cubic');
+  dv = interp2(u, v, flow{i}.Vy, uv0(:, 1), uv0(:, 2), '*cubic');
+  % Ending positions (i)
+  uv = uv0 + [du, dv];
+  xyz = images(i).cam.invproject(uv);
+  for i_pt = 1:size(xyz, 1)
+    xyz(i_pt, :) = smdem.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true, gxyz(i_pt, 1:2), 100);
+  end
+  figure();
+  showimg(dem.x, dem.y, hillshade(dem.Z, dem.x, dem.y));
+  hold on
+  ddays = images(i).date_num - images(i0).date_num;
+  v = sqrt(sum((xyz - gxyz).^2, 2)) / ddays;
+  [X, Y, V] = pts2grid(gxyz(:, 1), gxyz(:, 2), v, gdx * 5, gdy * 5);
+  alphawarp(X, Y, V, 1);
+  caxis([0 10]);
+  colormap jet;
+  colorbar
+  [~, ~, DX] = pts2grid(gxyz(:, 1), gxyz(:, 2), xyz(:, 1) - gxyz(:, 1), gdx * 5, gdy * 5);
+  [~, ~, DY] = pts2grid(gxyz(:, 1), gxyz(:, 2), xyz(:, 2) - gxyz(:, 2), gdx * 5, gdy * 5);
+  s = 1;
+  quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'k');
+  figure();
+  ind = 1:size(uv, 1);
+  ind(isnan(v(ind))) = [];
+  ind(v(ind) > 10) = [];
+  images(i0).plot();
+  hold on
+  quiver(uv0(ind, 1), uv0(ind, 2), du(ind), dv(ind), 0, 'w');
+  colors = jet(101);
+  scatter(uv0(ind, 1), uv0(ind, 2), 20, colors(ceil(v(ind) * 10), :), 'markerFaceColor', 'flat');
+  caxis([0 10]);
+  colormap jet;
+  colorbar
+end
+
+% Alternate: plot all results
 
 for i0 = 1:(length(images) - 1)
   % Starting positions (image i0)
@@ -291,14 +328,14 @@ for i0 = 1:(length(images) - 1)
   duv = [du(mask), dv(mask)];
   uv = uv0 + duv;
 
-  figure();
-  imshow(images(i).read());
-  hold on
-  quiver(uv0(ind, 1), uv0(ind, 2), duv(ind, 1), duv(ind, 2), 0, 'y');
+  % figure();
+  % imshow(images(i).read());
+  % hold on
+  % quiver(uv0(ind, 1), uv0(ind, 2), duv(ind, 1), duv(ind, 2), 0, 'y');
 
   % Reduce and convert to world coordinates
   ind = round(rand(1e6, 1) * size(uv0, 1));
-  plane = [0 0 -1 50];
+  plane = [0 0 -1 100];
   dxyz0 = images(i0).cam.invproject(uv0(ind, :));
   xyz0 = intersectRayPlane(images(i0).cam.xyz, dxyz0, plane);
   dxyz = images(i).cam.invproject(uv(ind, :));
@@ -306,23 +343,19 @@ for i0 = 1:(length(images) - 1)
 
   % smdem.plot(2);
   figure();
-  showimg(smdem.x, smdem.y, hillshade(smdem.Z, smdem.x, smdem.y));
+  showimg(dem.x, dem.y, hillshade(dem.Z, dem.x, dem.y));
   hold on
   ddays = images(i).date_num - images(i0).date_num;
   v = sqrt(sum((xyz - xyz0).^2, 2)) / ddays;
-  [x, y, Z] = pts2grid(xyz0(:, 1), xyz(:, 2), v, 100, 100);
-  [X, Y] = meshgrid(x, y);
-  alphawarp(X, Y, Z, 1);
+  [X, Y, V] = pts2grid(xyz0(:, 1), xyz0(:, 2), v, 100, 100);
+  alphawarp(X, Y, V, 1);
   caxis([0 10]);
   colormap jet;
   colorbar
-
-
-
-
-
-  s = 4;
-  quiver(xyz0(:, 1), xyz0(:, 2), s * (xyz(:, 1) - xyz0(:, 1)) / ddays, s * (xyz(:, 2) - xyz0(:, 2)) / ddays, 0, 'r');
+  [~, ~, DX] = pts2grid(xyz0(:, 1), xyz0(:, 2), xyz(:, 1) - xyz0(:, 1), 100, 100);
+  [~, ~, DY] = pts2grid(xyz0(:, 1), xyz0(:, 2), xyz(:, 2) - xyz0(:, 2), 100, 100);
+  s = 2;
+  quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'k');
 end
 
 %% --- Match moving features (deprecated) ----

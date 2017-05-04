@@ -122,7 +122,7 @@ classdef DEM
         properties = {properties};
       end
       for p = properties
-        if isempty(dem.(p{1}))
+        if isempty(dem.(p{1})) || nargin > 1
           dem.(p{1}) = dem.(['compute_' (p{1})]);
         end
       end
@@ -432,28 +432,26 @@ classdef DEM
       % --- Intersect ray with bounding box ---
       if nargin < 6
         [tmin, tmax] = intersectRayBox(origin, direction, dem.zmin.min, dem.zmin.max);
-        % imin = [1 1];
-        % imax = [dem.zmin.nx, dem.zmin.ny];
       else
-        error('Broken')
-        % % Apply search radius (if specified)
-        % % FIXME: Broken
-        % % Snap search radius to grid cell boundaries
-        % imin = floor((xy0(1:2) - r0 - dem.zmin.min(1:2)) ./ [dem.zmin.dx, dem.zmin.dy]);
-        % imax = ceil((xy0(1:2) + r0 - dem.zmin.min(1:2)) ./ [dem.zmin.dx, dem.zmin.dy]);
-        % smin = dem.zmin.min(1:2) + imin .* [dem.zmin.dx, dem.zmin.dy];
-        % smax = dem.zmin.min(1:2) + imax .* [dem.zmin.dx, dem.zmin.dy];
-        % % Intersect with outer grid boundaries
-        % smin = max([dem.zmin.min(1:2) ; smin]);
-        % smax = min([dem.zmin.max(1:2) ; smax]);
-        % [tmin, tmax] = intersectRayBox([origin direction], [smin dem.zmin.min(3) smax dem.zmin.max(3)]);
-        % % imin = round((smin - dem.zmin.min(1:2)) ./ [dem.zmin.dx, dem.zmin.dy]);
-        % % imax = round((smax - dem.zmin.min(1:2)) ./ [dem.zmin.dx, dem.zmin.dy]);
-      end
-      if isempty(tmin)
-        return
+        % Apply search radius (if specified)
+        % Snap search radius to grid cell boundaries
+        [xi, yi] = dem.zmin.xy2ind(xy0(1:2) + [r0 0; 0 r0; -r0 0; 0 -r0]);
+        boxmin = [dem.zmin.min(1) + (min(xi) - 1) * dem.zmin.dx,
+                  dem.zmin.max(2) - max(yi) * dem.zmin.dy,
+                  dem.zmin.min(3)];
+        boxmax = [dem.zmin.min(1) + max(xi) * dem.zmin.dx,
+                  dem.zmin.max(2) - (min(yi) - 1) * dem.zmin.dy,
+                  dem.zmin.max(3)];
+        % Intersect with outer grid boundaries
+        [tmin, tmax] = intersectRayBox(origin, direction, boxmin, boxmax);
       end
       X = [];
+      if isempty(tmin)
+        if first
+          X = nan(1, 3);
+        end
+        return
+      end
       % Compute endpoints of ray within grid
       start = origin + tmin * direction;
       stop = origin + tmax * direction;
@@ -503,7 +501,7 @@ classdef DEM
       % (e.g. 0 -> 1)
       % Traverse grid
       z_in = start(3);
-      i_cell = 1;
+      % i_cell = 1;
       % voxels = [];
       while (x <= dem.zmin.nx) && (x >= 1) && (y <= dem.zmin.ny) && (y >= 1)
         % TODO: Check if origin is below surface
@@ -516,12 +514,12 @@ classdef DEM
         % Convert to upper-left matrix indices (flip y)
         % TODO: avoidable?
         yi = dem.zmin.ny - y + 1;
+        % TODO: Simplify logic
         if ~(isnan(dem.zmax.Z(yi, x)) || isnan(dem.zmin.Z(yi, x))) && ~((z_in > dem.zmax.Z(yi, x) && z_out > dem.zmax.Z(yi, x)) || (z_in < dem.zmin.Z(yi, x) && z_out < dem.zmin.Z(yi, x)))
-          z_in, z_out, dem.zmin.Z(yi, x), dem.zmax.Z(yi, x)
           sqi = sub2ind(size(dem.Z), [yi + 1; yi; yi; yi + 1], [x; x; x + 1; x + 1]);
           square = [dem.X(sqi), dem.Y(sqi), dem.Z(sqi)];
-          tri1 = square([1 2 3], :)
-          tri2 = square([3 4 1], :)
+          tri1 = square([1 2 3], :);
+          tri2 = square([3 4 1], :);
           [intersection, ~, ~, t] = rayTriangleIntersection(origin, direction, tri1(1, :), tri1(2, :), tri1(3, :));
           if ~intersection
             [intersection, ~, ~, t] = rayTriangleIntersection(origin, direction, tri2(1, :), tri2(2, :), tri2(3, :));
@@ -547,6 +545,9 @@ classdef DEM
           y = y + stepY;
         end
         z_in = z_out;
+      end
+      if isempty(X) && first
+        X = nan(1, 3);
       end
     end
 
@@ -694,13 +695,12 @@ classdef DEM
 
     function Z = parse_Z(value)
       if isempty(value) || ~isnumeric(value)
-        error('Value must be non-empty and numeric.')
+        error('Value must be non-empty and numeric.');
       end
       if size(value, 3) > 1
-        warning('Dimensions greater than 2 currently not supported. Using first 2D layer.')
-        value = value(:, :, 1);
+        warning('Dimensions greater than 2 currently not supported. Using first 2D layer.');
       end
-      Z = value;
+      Z = value(:, :, 1);
     end
 
     function [xlim, x, X] = parse_xlim(value)
