@@ -49,11 +49,11 @@ function S = svg2struct(svg, scale)
   for i = 0:(svg.getLength - 1)
     child = svg.item(i);
     tag = char(child.getNodeName);
-    if ismember(tag, {'svg'})
+    if ismember(tag, {'svg', 'switch'}) || (ismember(tag, {'g'}) && strcmp(child.getAttribute('id'), ''))
       S = svg2struct(child, scale);
       break
     end
-    if ismember(tag, {'#comment', '#text', 'image'})
+    if ismember(tag, {'#comment', '#text', 'image', 'foreignObject'})
       continue
     end
     name = char(child.getAttribute('id'));
@@ -91,33 +91,3 @@ function S = svg2struct(svg, scale)
       S = rmfield(S, name);
     end
   end
-
-  % % Plot (debug)
-  % fields = fieldnames(S);
-  % if ~isempty(fields)
-  %   figure()
-  %   set(gcf, 'color', 'white');
-  %   N = length(fields);
-  %   for n = 2:N
-  %     % basic plot
-  %     subplot(N, 1, n)
-  %     name = fields{n};
-  %     x = S.(name)(:, 1);
-  %     y = S.(name)(:, 2);
-  %     plot(x, y, 'r'), hold on
-  %     set(gca, 'YDir', 'reverse');
-  %     title(name, 'fontsize', 16);
-  %     % mark start and stop of segments
-  %     % (skip for points)
-  %     ends = [0; find(isnan(x)); length(x) + 1];
-  %     lines = diff(ends) > 2;
-  %     starts = ends(1:end - 1) + 1; starts = starts(lines);
-  %     stops = ends(2:end) - 1; stops = stops(lines);
-  %     if ~isempty(starts)
-  %       plot(x(starts), y(starts), 'g*'), plot(x(stops), y(stops), 'r*')
-  %       plot(x(starts(1)), y(starts(1)), 'g*', 'linewidth', 2), plot(x(stops(end)), y(stops(end)), 'r*', 'linewidth', 2)
-  %     else
-  %       plot(x, y, 'r*')
-  %     end
-  %   end
-  % end
