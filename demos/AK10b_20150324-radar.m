@@ -9,24 +9,28 @@
 IMGRAFT_PATH = '.';
 DATA_DIR = fullfile('demos', 'data');
 IMG_PATH = fullfile(DATA_DIR, 'images', 'AK10b_20150324-radar', '*.JPG');
-DEM_PATH = fullfile(DATA_DIR, 'dems', 'SETSM_WV01_20150423_102001003C038400_102001003C64D800_seg1_2m_v1.0_dem.tif');
-OUT_DIR = fullfile('demos', 'test');
+GLACIER_DEM_PATH = fullfile(DATA_DIR, 'dems', 'SETSM_WV01_20150423_102001003C038400_102001003C64D800_seg1_2m_v1.0_dem_proj.tif');
+HORIZON_DEM_PATH = fullfile(DATA_DIR, 'dems', '20090827_2m.tif');
+OUT_DIR = fullfile('demos', 'AK10b_20150324-radar');
 addpath(genpath(IMGRAFT_PATH));
 
 %%
 % Parameters
-IMG_SCALE = 0.25;
-DEM_SCALE = 0.25;
-DEM_DISTANCE = 20e3; % m
-DEM_SMOOTH_WIDTH = 300; % m
+IMG_SCALE = 1; % FIXME: currently unused
+HORIZON_DEM_DISTANCE = 20e3; % m
+HORIZON_DEM_SCALE = 0.25;
+GLACIER_DEM_DISTANCE = 5e3; % m
+GLACIER_DEM_SCALE = 0.25;
+GLACIER_DEM_SMOOTH_WIDTH = 300; % m
 COAST_HAE = 17; % m
-CAM_ID = lower('AK10');
+CAM_ID = lower('AK10b');
 SVG_GCP = 'gcp';
 SVG_COAST = 'coast';
 SVG_HORIZON = 'horizon';
 SVG_LAND = 'land';
 SVG_GLACIER = 'glacier';
-SVG_LINE_DENSITY = 0.10; % points per pixel
+SVG_LINE_DENSITY = 0.05; % points per pixel
+LDMAX = 10; % pixels (max distance to assign when calibrating with lines)
 
 %%
 % Datasets
@@ -77,9 +81,10 @@ end
 %
 %  FIXME: Won't work if camera missing initial view direction and position
 %
-box = images(1).cam.viewbox(DEM_DISTANCE);
-dem = DEM(DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(DEM_SCALE).build();
-smdem = dem.smooth(DEM_SMOOTH_WIDTH).build();
+box = images(1).cam.viewbox(HORIZON_DEM_DISTANCE);
+HORIZON_DEM = DEM(HORIZON_DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(HORIZON_DEM_SCALE).build();
+box = images(1).cam.viewbox(GLACIER_DEM_DISTANCE);
+GLACIER_DEM = DEM(GLACIER_DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(GLACIER_DEM_SCALE).smooth(GLACIER_DEM_SMOOTH_WIDTH).build();
 
 %%
 % Compute the world coordinates of the horizon as seen from this camera.
@@ -89,10 +94,14 @@ smdem = dem.smooth(DEM_SMOOTH_WIDTH).build();
 %  TODO: Traverse grid in concentric circles or triangular wedges
 %
 if isempty(cam.viewdir)
-  HORIZON = dem.horizon(cam.xyz, 0:0.1:359);
+  HORIZON = HORIZON_DEM.horizon(cam.xyz, 0:0.1:359);
 else
-  HORIZON = images(1).cam.horizon(dem, 0.1);
+  HORIZON = images(1).cam.horizon(HORIZON_DEM, 0.1);
 end
+
+%%
+% Compile control lines (same for all images).
+LXYZ = [ifelse(isempty(coast), {}, COAST); ifelse(isempty(horizon), {}, HORIZON)];
 
 %%
 % Format "ground control lines" (GCL).
@@ -124,11 +133,8 @@ for i = has_lines
   images(i).gcl.uv = cell2mat(lines);
 
   %%
-  % Attach world coordinates of lines.
-  %
-  %  FIXME: Redundant and not memory efficient
-  %
-  images(i).gcl.xyz = [ifelse(isempty(coast), {}, COAST); ifelse(isempty(horizon), {}, HORIZON)];
+  % Attach world coordinates of lines (now only used by image.plot).
+  images(i).gcl.xyz = LXYZ;
 end
 
 %%
@@ -156,8 +162,8 @@ end
 is_anchor = arrayfun(@(img) any(~isempty(img.gcp.xyz) & ~isempty(img.gcl.xyz)), images);
 anchor_ind = find(is_anchor);
 flexparams = {'viewdir'};
-fixparams = {'f', 'k', [1 2]};
-[anchors, fit] = Camera.optimize_images(images(is_anchor), flexparams, fixparams, 10);
+fixparams = {'f', 'k', 1};
+[anchors, fit] = Camera.optimize_images(images(is_anchor), flexparams, fixparams, LDMAX, LXYZ);
 
 %%
 % Plot the results.
@@ -182,28 +188,27 @@ end
 %%
 % Match features between image and anchor, filter with RANSAC, and optimize orientation.
 %
-%  TODO: Support variable image sizes
+%  TODO: Support variable image size
 %
-fits = cell(size(images));
 for i = find(~is_anchor)
   I = images(i).read();
   i0 = images(i).anchor;
   I0 = images(i0).read();
 
   %%
-  % Generate grid of points in land polygons.
+  % Generate grid of points in land polygons and match between images.
   %
-  %  TODO: Move outside loop
-  %  TODO: Switch to keypoints matching
+  %  TODO: Move point generation to anchor-level loop
   %
-  [gdu, gdv] = deal(50);
-  matches = [];
+  [gdu, gdv] = deal(10);
+  pts = [];
   for j = 1:length(images(i0).fixedpolys)
-    pts = polygon2grid(images(i0).fixedpolys{j}, gdu, gdv);
-    [du, dv] = templatematch(I0, I, pts(:, 1), pts(:, 2), 'templatewidth', gdu, 'searchwidth', 5 * gdu);
-    matches = vertcat(matches, horzcat(pts, du, dv));
+    pts = [pts; polygon2grid(images(i0).fixedpolys{j}, gdu, gdv)];
   end
-  matches(any(isnan(matches), 2), :) = [];
+  [du, dv, correlation, signal, pu, pv] = templatematch(I0, I, pts(:, 1), pts(:, 2), 'templatewidth', gdu, 'searchwidth', 2 * gdu, 'method', 'NCC', 'super', 2);
+  is_strong = correlation > quantile(correlation, 0.8) & signal > quantile(signal, 0.8);
+  matches = horzcat(pu, pv, du, dv);
+  matches = matches(is_strong, :);
 
   %%
   % Filter matches with RANSAC.
@@ -213,31 +218,28 @@ for i = find(~is_anchor)
   %
   xy0 = images(i0).cam.image2camera(matches(:, 1:2));
   xy = images(i0).cam.image2camera(matches(:, 1:2) + matches(:, 3:4));
-  [F, in] = ransacfitfundmatrix(xy0', xy', 0.0000005);
+  [F, in] = ransacfitfundmatrix(xy0', xy', 1e-6);
   mean_motion = mean(sqrt(sum(matches(in, 3:4).^2, 2)));
 
   %%
   % Plot filtered matches.
   figure
   imshow(I0 / 1.5), hold on
-  s = 1;
-  quiver(matches(:, 1), matches(:, 2), matches(:, 3), matches(:, 4), 0, 'r');
-  quiver(matches(in, 1), matches(in, 2), matches(in, 3), matches(in, 4), 0, 'y');
+  s = 5;
+  quiver(matches(:, 1), matches(:, 2), s * matches(:, 3), s * matches(:, 4), 0, 'r');
+  quiver(matches(in, 1), matches(in, 2), s * matches(in, 3), s * matches(in, 4), 0, 'y');
   title([num2str(i0), ' -> ', num2str(i)]);
 
   %%
   % Orient camera
   %
   %  FIXME: Assumes images are the same size and camera
-  %  TODO: Retrieve rotation from F?
+  %  TODO: Retrieve rotation from F
   %  TODO: Write dedicated orientation function using normalized camera coordinates
   %
-  if mean_motion > 1
-    [newcams, fits{i}] = Camera.optimize_bundle(images(i0).cam, matches(in, 1:2) + matches(in, 3:4), images(i0).cam.xyz + images(i0).cam.camera2world(xy0(in, :)), 'viewdir');
-    images(i).cam = newcams{1};
-  else
-    images(i).cam = images(i0).cam;
-  end
+  uv = matches(in, 1:2) + matches(in, 3:4);
+  xyz = images(i0).cam.xyz + images(i0).cam.camera2world(xy0(in, :));
+  images(i).cam = Camera.optimize_bundle(images(i0).cam, uv, xyz, 'viewdir'){1};
 
   %%
   % Transform free polygons.
@@ -251,10 +253,10 @@ end
 %
 %  TODO: Also undistort images
 %  TODO: Support variable image sizes
-%  TODO: Wrap into function
 %
 mkdir(OUT_DIR, 'aligned');
 for i0 = find(is_anchor)
+
   %%
   % Copy anchor image.
   [~, filename, ext] = fileparts(images(i0).file);
@@ -269,14 +271,15 @@ for i0 = find(is_anchor)
 
   %%
   % For each image, project grid, interpolate at points, and save to file.
-  for i = find([images.anchor])
-    puv = images(i).cam.project(dxyz, true);
-    I = double(images(i).read());
-    I0 = uint8(nan(size(I)));
-    for channel = 1:size(I, 3)
-      temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2), '*linear');
-      I0(:, :, channel) = reshape(temp, flip(images(i0).cam.imgsz));
-    end
+  for i = find([images.anchor] == i0)
+    % puv = images(i).cam.project(dxyz, true);
+    % I = double(images(i).read());
+    % I0 = uint8(nan(size(I)));
+    % for channel = 1:size(I, 3)
+    %   temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2), '*linear');
+    %   I0(:, :, channel) = reshape(temp, flip(images(i0).cam.imgsz));
+    % end
+    I0 = images(i).project(images(i0).cam, dxyz);
     [~, filename, ext] = fileparts(images(i).file);
     outfile = fullfile(OUT_DIR, 'aligned', [num2str(i), '-', num2str(i0), '-', filename, ext]);
     imwrite(I0, outfile, 'Quality', 100);
@@ -287,31 +290,39 @@ end
 % Match features between consecutive image pairs using the Farneback
 % optical flow method:
 % <https://www.mathworks.com/help/vision/ref/opticalflowfarneback-class.html>.
-obj = opticalFlowFarneback('NumPyramidLevels', 5, 'NeighborhoodSize', 3, 'FilterSize', 25);
+%
+%  TODO: Set pyramid levels based on expected motion.
+%
+obj = opticalFlowFarneback('NumPyramidLevels', 3, 'NeighborhoodSize', 3, 'FilterSize', 25);
 flow = cell(length(images));
 for i = 1:length(images)
   I = rgb2gray(images(i).read());
   flow{i} = obj.estimateFlow(I);
 end
+% for i = 2:length(images)
+%   images(i).plot();
+%   hold on;
+%   plot(flow{i}, 'Decimation', [20, 20], 'Scale', 20);
+%   pause;
+% end
 
 %%
 % Generate a regular grid of glacier points.
-smdem = dem.resize(0.125).smooth(300).build();
 [gdx, gdy] = deal(10);
 gxyz = [];
 i0 = 1;
 for poly = images(i0).freepolys
   xyz = images(i0).cam.invproject(poly{:});
   for i_pt = 1:size(xyz, 1)
-    xyz(i_pt, :) = smdem.sample_ray_tri(images(i0).cam.xyz, xyz(i_pt, :), true);
+    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i0).cam.xyz, xyz(i_pt, :), true);
   end
   gxy = polygon2grid(xyz, gdx, gdy);
-  z = smdem.sample_points_tri(gxy);
+  z = GLACIER_DEM.sample_points_tri(gxy);
   gxyz0 = [gxy, z];
   uv = images(i0).cam.project(gxyz0);
   gxyz1 = images(i0).cam.invproject(uv);
   for i_pt = 1:size(gxyz1, 1)
-    gxyz1(i_pt, :) = smdem.sample_ray_tri(images(i0).cam.xyz, gxyz1(i_pt, :), true);
+    gxyz1(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i0).cam.xyz, gxyz1(i_pt, :), true);
   end
   visible = sqrt(sum((gxyz1 - gxyz0).^2, 2)) < 1;
   gxyz = [gxyz; [gxyz0(visible, :)]];
@@ -320,20 +331,21 @@ end
 %%
 % Plot glacier points on map.
 figure()
-smdem.plot(2);
+HORIZON_DEM.plot(2);
 hold on
-plot(gxyz(:, 1), gxyz(:, 2), 'r*');
-guv = images(i0).cam.project(gxyz);
+plot(gxyz(:, 1), gxyz(:, 2), 'r.');
 
 %%
 % Plot glacier points on image.
 figure()
 images(i0).plot();
 hold on
-plot(guv(:, 1), guv(:, 2), 'r*');
+guv = images(i0).cam.project(gxyz);
+plot(guv(:, 1), guv(:, 2), 'y.');
 
 %%
 % Sample motion at glacier points.
+motion = struct();
 for i0 = 1:(length(images) - 1)
   i = i0 + 1;
 
@@ -349,38 +361,62 @@ for i0 = 1:(length(images) - 1)
   uv = uv0 + [du, dv];
   xyz = images(i).cam.invproject(uv);
   for i_pt = 1:size(xyz, 1)
-    xyz(i_pt, :) = smdem.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true, gxyz(i_pt, 1:2), 100);
+    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true);
+  end
+
+  xyz = images(i0).cam.invproject(uv);
+  for i_pt = 1:size(xyz, 1)
+    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true);
   end
 
   %%
+  % Store in data structure.
+  motion(i0).t0 = images(i0).date_num;
+  motion(i0).t = images(i).date_num;
+  motion(i0).uv0 = uv0;
+  motion(i0).uv = uv;
+  motion(i0).xyz0 = gxyz;
+  motion(i0).xyz = xyz;
+end
+
+%%
+% Visualize results.
+for i0 = 7%1:(length(images) - 1)
+  [dx, dy] = deal(100);
+
+  %%
   % Plot glacier motion on map.
+  %
+  %  TODO: Incorporate into DEM.plot function
+  %
   figure();
-  showimg(dem.x, dem.y, hillshade(dem.Z, dem.x, dem.y));
+  showimg(HORIZON_DEM.x, HORIZON_DEM.y, hillshade(HORIZON_DEM.Z, HORIZON_DEM.x, HORIZON_DEM.y));
   hold on
-  ddays = images(i).date_num - images(i0).date_num;
-  v = sqrt(sum((xyz - gxyz).^2, 2)) / ddays;
-  [X, Y, V] = pts2grid(gxyz(:, 1), gxyz(:, 2), v, gdx * 5, gdy * 5);
+  ddays = motion(i0).t - motion(i0).t0;
+  v = sqrt(sum((motion(i0).xyz - motion(i0).xyz0).^2, 2)) / ddays;
+  [X, Y, V] = pts2grid(motion(i0).xyz0(:, 1), motion(i0).xyz0(:, 2), v, dx, dy);
   alphawarp(X, Y, V, 1);
-  caxis([0 10]);
+  % caxis([0 100]);
   colormap jet;
   colorbar
-  [~, ~, DX] = pts2grid(gxyz(:, 1), gxyz(:, 2), xyz(:, 1) - gxyz(:, 1), gdx * 5, gdy * 5);
-  [~, ~, DY] = pts2grid(gxyz(:, 1), gxyz(:, 2), xyz(:, 2) - gxyz(:, 2), gdx * 5, gdy * 5);
-  s = 1;
-  quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'k');
+  [~, ~, DX] = pts2grid(motion(i0).xyz0(:, 1), motion(i0).xyz0(:, 2), motion(i0).xyz(:, 1) - motion(i0).xyz0(:, 1), dx, dy);
+  [~, ~, DY] = pts2grid(motion(i0).xyz0(:, 1), motion(i0).xyz0(:, 2), motion(i0).xyz(:, 2) - motion(i0).xyz0(:, 2), dx, dy);
+  % s = 1;
+  % quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'k');
 
   %%
   % Plot glacier motion on image.
   figure();
-  ind = 1:size(uv, 1);
-  ind(isnan(v(ind))) = [];
-  ind(v(ind) > 10) = [];
+  ind = 1:size(motion(i0).uv, 1);
+  % ind(isnan(v(ind))) = [];
+  % ind(v(ind) > 10) = [];
   images(i0).plot();
   hold on
-  quiver(uv0(ind, 1), uv0(ind, 2), du(ind), dv(ind), 0, 'w');
-  colors = jet(101);
-  scatter(uv0(ind, 1), uv0(ind, 2), 20, colors(ceil(v(ind) * 10), :), 'markerFaceColor', 'flat');
-  caxis([0 10]);
-  colormap jet;
-  colorbar
+  s = 5;
+  quiver(motion(i0).uv0(ind, 1), motion(i0).uv0(ind, 2), s * (motion(i0).uv(ind, 1) - motion(i0).uv0(ind, 1)), s * (motion(i0).uv(ind, 2) - motion(i0).uv0(ind, 2)), 0, 'r');
+  % colors = jet(101);
+  % scatter(motion(i0).uv0(ind, 1), motion(i0).uv0(ind, 2), 20, colors(ceil(v(ind) * 10), :), 'markerFaceColor', 'flat');
+  % caxis([0 10]);
+  % colormap jet;
+  % colorbar
 end
