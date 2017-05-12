@@ -9,6 +9,6 @@ New features include:
 * Optimize over multiple images at once
 * Optimize using "ground control lines"
 * Solve for relative camera rotation without a DEM
-* Intersect camera rays with a DEM using a discrete ray traversal algorithm
+* Intersect camera rays with a DEM using a discrete ray tracing algorithm
 
 Be warned, however, that the code currently has some toolbox dependencies, which the original toolbox does not.
