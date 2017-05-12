@@ -230,10 +230,11 @@ classdef DEM
       end
       % --- Fill holes ---
       w = 2 .* round((width / dem.dx + 1) / 2) - 1; % nearest odd integer
-      Zg = imgaussfilt(dem.Z, 6, 'FilterSize', w, 'Padding', 'replicate', 'FilterDomain', 'spatial');
+      gauss_filter = fspecial('gaussian', w, 6);
+      Zg = nanconv(dem.Z, gauss_filter, 'edge', 'nanout');
       disk = fspecial('disk', w);
       a = nanstd(dem.Z(:) - Zg(:));
-      Zd = imfilter(exp((dem.Z - Zg) ./ a), disk, 'replicate');
+      Zd = nanconv(exp((dem.Z - Zg) ./ a), disk, 'edge', 'nanout');
       Zf = a * log(Zd) + Zg;
       dem.Z = Zf;
     end
