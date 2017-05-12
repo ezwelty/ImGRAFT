@@ -472,7 +472,7 @@ classdef Camera
       in = Xc(:, 3) > 0;
     end
 
-    function [in, xy, uv] = inview(cam, xyz, directions)
+    function [in, xy] = inview(cam, xyz, directions)
       % INVIEW Checks whether points are within the camera's view.
       %
       %   in = cam.inview(xyz)
@@ -483,9 +483,29 @@ classdef Camera
       if nargin < 3 || isempty(directions)
         directions = false;
       end
-      xy = cam.world2camera(xyz, directions);
-      uv = cam.camera2image(xy);
-      in = cam.inframe(uv);
+      if size(xyz, 2) > 2
+        xyz = cam.world2camera(xyz, directions);
+      end
+      % If ideal, project and check if in frame.
+      if all(cam.k == 0) && all(cam.p == 0)
+        uv = cam.camera2image(xy);
+        in = cam.inframe(uv);
+      % Otherwise, inverse-project edges and test points are inside.
+      else
+        u = (0:(cam.imgsz(1)/100):cam.imgsz(1))';
+        v = (0:(cam.imgsz(2)/100):cam.imgsz(2))';
+        edge_uv = [
+          cbind(u, 0);
+          cbind(cam.imgsz(1), v);
+          cbind(flip(u), cam.imgsz(2));
+          cbind(0, flip(v))
+        ];
+        edge_xy = cam.image2camera(edge_uv);
+        in = inpolygon(xyz(:, 1), xyz(:, 2), edge_xy(:, 1), edge_xy(:, 2));
+      end
+      if nargout > 1
+        xy = xyz;
+      end
     end
 
     function in = inframe(cam, uv)
@@ -912,6 +932,14 @@ classdef Camera
       [X, edge] = dem.horizon(cam.xyz, ray_angles);
     end
 
+    % Helper functions
+
+    function pixels = size_in_pixels(cam, size, distance)
+      xy = [0, 0; size / distance, 0];
+      uv = cam.camera2image(xy);
+      pixels = sqrt(sum(diff(uv).^2));
+    end
+
   end % methods
 
   methods (Static)
@@ -1042,7 +1070,7 @@ classdef Camera
       fprintf('Initial...\n');
       function e = ef(params)
         newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
-        [duv, d] = Camera.projerror_bundle(newcams, uv, xyz, {[]}, {[]}, {[]});
+        [duv, d] = Camera.projerror_bundle(newcams, uv, xyz, cell(1, length(newcams)), cell(1, length(newcams)), []);
         e = reshape(vertcat(duv{:}), [], 1);
       end
       [params_final, ssq] = LMFnlsq(@ef, params_initial);
@@ -1052,7 +1080,7 @@ classdef Camera
       has_lines = find(not(cellfun('isempty', luv)) & not(cellfun('isempty', lxyz)));
       function d = ef2(params)
         newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
-        duv = Camera.projerror_bundle(newcams, uv, xyz, {[]}, {[]}, {[]});
+        duv = Camera.projerror_bundle(newcams, uv, xyz, cell(1, length(newcams)), cell(1, length(newcams)), []);
         e = vertcat(duv{:});
         d = sqrt(sum(e.^2, 2));
         d(d > ldmax) = ldmax;
@@ -1120,6 +1148,9 @@ classdef Camera
         luv = [];
       else
         luv = arrayfun(@(img) img.gcl.uv, images, 'uniform', false);
+        if ~iscell(lxyz{1})
+          lxyz = {lxyz};
+        end
       end
       % Optimize cameras
       [newcams, fit] = Camera.optimize_bundle(cams, uv, xyz, flexparams, fixparams, luv, lxyz, ldmax);
