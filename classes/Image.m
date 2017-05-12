@@ -288,8 +288,11 @@ classdef Image
           duv = img.cam.projerror_lines(img.gcl.uv, img.gcl.xyz);
           quiver(img.gcl.uv(:, 1), img.gcl.uv(:, 2), duv(:, 1), duv(:, 2), 0, 'r');
           for i_line = 1:length(img.gcl.xyz)
-            pluv = img.cam.project(img.gcl.xyz{i_line});
-            plot(pluv(:, 1), pluv(:, 2), 'y-');
+            xyz = img.cam.clip_line_inview(img.gcl.xyz{i_line});
+            for i_segment = 1:length(xyz)
+              pluv = img.cam.project(xyz{i_segment});
+              plot(pluv(:, 1), pluv(:, 2), 'y-');
+            end
           end
         end
       end
@@ -302,6 +305,25 @@ classdef Image
         end
       end
       hold off
+    end
+
+    function I0 = project(img, cam, dxyz)
+      if any(cam.imgsz ~= img.size)
+        error('Original and target image sizes must be equal.')
+      end
+      % Precompute reference grid.
+      [u, v] = meshgrid(0.5:(cam.imgsz(1) - 0.5), 0.5:(cam.imgsz(2) - 0.5));
+      if nargin < 3 || isempty(dxyz)
+        dxyz = cam.invproject([u(:), v(:)]);
+      end
+      % Project and interpolate at grid points.
+      puv = img.cam.project(dxyz, true);
+      I = double(img.read());
+      I0 = uint8(nan(size(I)));
+      for channel = 1:size(I, 3)
+        temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2), '*linear');
+        I0(:, :, channel) = reshape(temp, flip(cam.imgsz));
+      end
     end
 
   end % methods
