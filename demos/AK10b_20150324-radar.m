@@ -17,9 +17,9 @@ addpath(genpath(IMGRAFT_PATH));
 %%
 % Parameters
 IMG_SCALE = 1; % FIXME: currently unused
-HORIZON_DEM_DISTANCE = 20e3; % m
+% HORIZON_DEM_DISTANCE = 20e3; % m
 HORIZON_DEM_SCALE = 0.25;
-GLACIER_DEM_DISTANCE = 5e3; % m
+% GLACIER_DEM_DISTANCE = 5e3; % m
 GLACIER_DEM_SCALE = 0.25;
 GLACIER_DEM_SMOOTH_WIDTH = 300; % m
 COAST_HAE = 17; % m
@@ -81,10 +81,14 @@ end
 %
 %  FIXME: Won't work if camera missing initial view direction and position
 %
-box = images(1).cam.viewbox(HORIZON_DEM_DISTANCE);
-HORIZON_DEM = DEM(HORIZON_DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(HORIZON_DEM_SCALE).build();
-box = images(1).cam.viewbox(GLACIER_DEM_DISTANCE);
-GLACIER_DEM = DEM(GLACIER_DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(GLACIER_DEM_SCALE).smooth(GLACIER_DEM_SMOOTH_WIDTH).build();
+% box = images(1).cam.viewbox(HORIZON_DEM_DISTANCE);
+% HORIZON_DEM = DEM(HORIZON_DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(HORIZON_DEM_SCALE).build();
+HORIZON_DEM = DEM(HORIZON_DEM_PATH).crop([], [], [0 Inf]).resize(HORIZON_DEM_SCALE).build();
+% box = images(1).cam.viewbox(GLACIER_DEM_DISTANCE);
+% GLACIER_DEM = DEM(GLACIER_DEM_PATH).crop(box(:, 1), box(:, 2), [0 Inf]).resize(GLACIER_DEM_SCALE).build();
+% SMOOTH_GLACIER_DEM = GLACIER_DEM.smooth(GLACIER_DEM_SMOOTH_WIDTH).build();
+GLACIER_DEM = DEM(GLACIER_DEM_PATH).crop([], [], [0 Inf]).resize(GLACIER_DEM_SCALE).build();
+SMOOTH_GLACIER_DEM = GLACIER_DEM.smooth(GLACIER_DEM_SMOOTH_WIDTH);
 
 %%
 % Compute the world coordinates of the horizon as seen from this camera.
@@ -162,7 +166,7 @@ end
 is_anchor = arrayfun(@(img) any(~isempty(img.gcp.xyz) & ~isempty(img.gcl.xyz)), images);
 anchor_ind = find(is_anchor);
 flexparams = {'viewdir'};
-fixparams = {'f', 'k', 1};
+fixparams = {'f', 'k', [1]};
 [anchors, fit] = Camera.optimize_images(images(is_anchor), flexparams, fixparams, LDMAX, LXYZ);
 
 %%
@@ -198,6 +202,7 @@ for i = find(~is_anchor)
   %%
   % Generate grid of points in land polygons and match between images.
   %
+  %  FIXME: Assumes a maximum motion between images
   %  TODO: Move point generation to anchor-level loop
   %
   [gdu, gdv] = deal(10);
@@ -314,15 +319,17 @@ i0 = 1;
 for poly = images(i0).freepolys
   xyz = images(i0).cam.invproject(poly{:});
   for i_pt = 1:size(xyz, 1)
-    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i0).cam.xyz, xyz(i_pt, :), true);
+    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i0).cam.xyz, xyz(i_pt, :), true, 500);
   end
+  xyz(any(isnan(xyz), 2), :) = [];
   gxy = polygon2grid(xyz, gdx, gdy);
-  z = GLACIER_DEM.sample_points_tri(gxy);
+  z = SMOOTH_GLACIER_DEM.sample_points_tri(gxy);
   gxyz0 = [gxy, z];
+  gxyz0(isnan(z) | z < COAST_HAE, :) = [];
   uv = images(i0).cam.project(gxyz0);
   gxyz1 = images(i0).cam.invproject(uv);
   for i_pt = 1:size(gxyz1, 1)
-    gxyz1(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i0).cam.xyz, gxyz1(i_pt, :), true);
+    gxyz1(i_pt, :) = SMOOTH_GLACIER_DEM.sample_ray_tri(images(i0).cam.xyz, gxyz1(i_pt, :), true);
   end
   visible = sqrt(sum((gxyz1 - gxyz0).^2, 2)) < 1;
   gxyz = [gxyz; [gxyz0(visible, :)]];
@@ -331,14 +338,15 @@ end
 %%
 % Plot glacier points on map.
 figure()
-HORIZON_DEM.plot(2);
+GLACIER_DEM.plot(2);
 hold on
+plot(xyz(:, 1), xyz(:, 2), 'y-');
 plot(gxyz(:, 1), gxyz(:, 2), 'r.');
 
 %%
 % Plot glacier points on image.
 figure()
-images(i0).plot();
+images(i0).plot(false, true);
 hold on
 guv = images(i0).cam.project(gxyz);
 plot(guv(:, 1), guv(:, 2), 'y.');
@@ -360,13 +368,8 @@ for i0 = 1:(length(images) - 1)
   % Calculate ending positions (i).
   uv = uv0 + [du, dv];
   xyz = images(i).cam.invproject(uv);
-  for i_pt = 1:size(xyz, 1)
-    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true);
-  end
-
-  xyz = images(i0).cam.invproject(uv);
-  for i_pt = 1:size(xyz, 1)
-    xyz(i_pt, :) = GLACIER_DEM.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true);
+  for i_pt = 1:size(xyz, 1);
+    xyz(i_pt, :) = SMOOTH_GLACIER_DEM.sample_ray_tri(images(i).cam.xyz, xyz(i_pt, :), true, gxyz(i_pt, :), 10);
   end
 
   %%
@@ -377,12 +380,29 @@ for i0 = 1:(length(images) - 1)
   motion(i0).uv = uv;
   motion(i0).xyz0 = gxyz;
   motion(i0).xyz = xyz;
+
+  % I0 = images(i0).read();
+  % I = images(i).read();
+  % puv = images(i0).cam.project(gxyz);
+  % [du, dv, correlation, signal, pu, pv] = templatematch(I0, I, puv(:, 1), pts(:, 2), 'templatewidth', 9, 'searchwidth', 30, 'method', 'NCC', 'super', 2);
+  % is_strong = correlation > quantile(correlation, 0.8) & signal > quantile(signal, 0.8);
+  % matches = horzcat(pu, pv, du, dv);
+  % matches = matches(is_strong, :);
+  % motion(i0).flow.uv0 = uv0;
+  % motion(i0).flow.uv = uv;
+  % motion(i0).flow.xyz0 = gxyz;
+  % motion(i0).flow.xyz = xyz;
+  % motion(i0).ncc.uv0 = uv0;
+  % motion(i0).ncc.uv = uv;
+  % motion(i0).ncc.xyz0 = gxyz;
+  % motion(i0).ncc.xyz = xyz;
 end
 
 %%
 % Visualize results.
-for i0 = 7%1:(length(images) - 1)
-  [dx, dy] = deal(100);
+for i0 = 1:(length(images) - 1)
+  [dx, dy] = deal(50);
+  vrange = [0, 10];
 
   %%
   % Plot glacier motion on map.
@@ -390,33 +410,43 @@ for i0 = 7%1:(length(images) - 1)
   %  TODO: Incorporate into DEM.plot function
   %
   figure();
-  showimg(HORIZON_DEM.x, HORIZON_DEM.y, hillshade(HORIZON_DEM.Z, HORIZON_DEM.x, HORIZON_DEM.y));
+  showimg(GLACIER_DEM.x, GLACIER_DEM.y, hillshade(GLACIER_DEM.Z, GLACIER_DEM.x, GLACIER_DEM.y));
   hold on
   ddays = motion(i0).t - motion(i0).t0;
   v = sqrt(sum((motion(i0).xyz - motion(i0).xyz0).^2, 2)) / ddays;
   [X, Y, V] = pts2grid(motion(i0).xyz0(:, 1), motion(i0).xyz0(:, 2), v, dx, dy);
   alphawarp(X, Y, V, 1);
-  % caxis([0 100]);
+  caxis(vrange);
   colormap jet;
   colorbar
   [~, ~, DX] = pts2grid(motion(i0).xyz0(:, 1), motion(i0).xyz0(:, 2), motion(i0).xyz(:, 1) - motion(i0).xyz0(:, 1), dx, dy);
   [~, ~, DY] = pts2grid(motion(i0).xyz0(:, 1), motion(i0).xyz0(:, 2), motion(i0).xyz(:, 2) - motion(i0).xyz0(:, 2), dx, dy);
-  % s = 1;
-  % quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'k');
+  s = 5;
+  quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'w');
 
   %%
   % Plot glacier motion on image.
   figure();
   ind = 1:size(motion(i0).uv, 1);
-  % ind(isnan(v(ind))) = [];
-  % ind(v(ind) > 10) = [];
+  ind(isnan(v(ind))) = [];
   images(i0).plot();
   hold on
   s = 5;
-  quiver(motion(i0).uv0(ind, 1), motion(i0).uv0(ind, 2), s * (motion(i0).uv(ind, 1) - motion(i0).uv0(ind, 1)), s * (motion(i0).uv(ind, 2) - motion(i0).uv0(ind, 2)), 0, 'r');
-  % colors = jet(101);
-  % scatter(motion(i0).uv0(ind, 1), motion(i0).uv0(ind, 2), 20, colors(ceil(v(ind) * 10), :), 'markerFaceColor', 'flat');
-  % caxis([0 10]);
-  % colormap jet;
-  % colorbar
+  quiver(motion(i0).uv0(ind, 1), motion(i0).uv0(ind, 2), s * (motion(i0).uv(ind, 1) - motion(i0).uv0(ind, 1)), s * (motion(i0).uv(ind, 2) - motion(i0).uv0(ind, 2)), 0, 'w');
+  colors = jet(100);
+  scatter(motion(i0).uv0(ind, 1), motion(i0).uv0(ind, 2), 20, colors(ceil(size(colors, 1) * min(max(vrange), v(ind)) / max(vrange)), :), 'markerFaceColor', 'flat');
+  caxis(vrange);
+  colormap jet;
+  colorbar
 end
+
+t0 = [motion.t0];
+t = [motion.t];
+xyz0 = [motion.xyz0];
+xyz = [motion.xyz];
+dxyz = xyz - xyz0;
+DXY = reshape(dxyz, size(dxyz, 1), 3, []);
+ddays = t - t0;
+V = squeeze(sqrt(sum(DXY(:, 1:2, :).^2, 2))) ./ ddays;
+ind = 6000;
+stairs(t0, V(ind, :))
