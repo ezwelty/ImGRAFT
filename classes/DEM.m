@@ -237,6 +237,9 @@ classdef DEM
       Zd = nanconv(exp((dem.Z - Zg) ./ a), disk, 'edge', 'nanout');
       Zf = a * log(Zd) + Zg;
       dem.Z = Zf;
+      affected_props = {'zmin', 'zmax', 'zlim'};
+      is_built = cellfun(@(p) ~isempty(dem.(p)), affected_props);
+      dem = dem.build(affected_props(is_built));
     end
 
     function dem = fill_circle(dem, center, radius, value)
@@ -406,13 +409,16 @@ classdef DEM
     function X = sample_ray_tri(dem, origin, direction, first, xy0, r0)
       % SAMPLE_RAY_TRI Sample triangles along ray.
       %
-      %   z = dem.sample_ray_tri(xy)
+      %   X = dem.sample_ray_tri(origin, direction, first = true)
+      %   X = dem.sample_ray_tri(origin, direction, first = true, dlim)
+      %   X = dem.sample_ray_tri(origin, direction, first = true, xy0, r0)
       %
       % Inputs:
       %   origin    - Origin of ray [x, y, z]
       %   direction - Direction of ray [dx, dy, dz]
       %   first     - Whether to return first or all intersections
-      %   xy0       - Start of search
+      %   dlim      - Minimum (and optionally maximum) xy-distance to search
+      %   xy0       - Start of search [x, y]
       %   r0        - Radius of search from xy0
       %
       % Outputs:
@@ -426,27 +432,43 @@ classdef DEM
       % TODO: Pre-compute triangles
       % TODO: Traverse grid in a quadtree
 
+      X = [];
       % --- Check inputs ---
       if nargin < 4 || isempty(first)
         first = true;
       end
-      % --- Intersect ray with bounding box ---
-      if nargin < 6
-        [tmin, tmax] = intersectRayBox(origin, direction, dem.zmin.min, dem.zmin.max);
-      else
-        % Apply search radius (if specified)
-        % Snap search radius to grid cell boundaries
-        [xi, yi] = dem.zmin.xy2ind(xy0(1:2) + [r0 0; 0 r0; -r0 0; 0 -r0]);
-        boxmin = [dem.zmin.min(1) + (min(xi) - 1) * dem.zmin.dx,
-                  dem.zmin.max(2) - max(yi) * dem.zmin.dy,
-                  dem.zmin.min(3)];
-        boxmax = [dem.zmin.min(1) + max(xi) * dem.zmin.dx,
-                  dem.zmin.max(2) - (min(yi) - 1) * dem.zmin.dy,
-                  dem.zmin.max(3)];
-        % Intersect with outer grid boundaries
-        [tmin, tmax] = intersectRayBox(origin, direction, boxmin, boxmax);
+      if any(isnan([origin, direction]))
+        if first
+          X = nan(1, 3);
+        end
+        return
       end
-      X = [];
+      % --- Intersect ray with bounding box ---
+      if nargin < 5
+        boxmin = dem.zmin.min;
+        boxmax = dem.zmin.max;
+      else
+        if nargin < 6
+          % Apply xy-distance limits
+          if length(xy0) == 1
+            xy0(2) = Inf;
+          end
+          corners = origin(1:2) + (direction(1:2) ./ sqrt(sum(direction(1:2).^2))) .* reshape(xy0(1:2), 2, []);
+          rbox = [min(corners(:, 1)), max(corners(:, 1)), min(corners(:, 2)), max(corners(:, 2))];
+        else
+          % Apply search radius (if specified)
+          rbox = [xy0(1) + [-r0, r0], xy0(2) + [-r0, r0]];
+        end
+        dembox = [sort(dem.zmin.xlim), sort(dem.zmin.ylim)];
+        box = intersectBoxes(dembox, rbox);
+        [xi, yi] = dem.zmin.xy2ind(combvec(box(1:2), box(3:4))');
+        xbox = sort(dem.zmin.xlim(1) + [min(xi) - 1, max(xi)] * dem.zmin.dx * sign(diff(dem.zmin.xlim)));
+        ybox = sort(dem.zmin.ylim(1) + [min(yi) - 1, max(yi)] * dem.zmin.dy * sign(diff(dem.zmin.ylim)));
+        boxmin = [xbox(1), ybox(1), dem.zmin.min(3)];
+        boxmax = [xbox(2), ybox(2), dem.zmin.max(3)];
+      end
+      % Intersect with outer grid boundaries
+      [tmin, tmax] = intersectRayBox(origin, direction, boxmin, boxmax);
       if isempty(tmin)
         if first
           X = nan(1, 3);
@@ -459,6 +481,9 @@ classdef DEM
       % Find starting voxel coordinates
       x = ceil((start(1) - dem.zmin.min(1)) / dem.zmin.dx);
       y = ceil((start(2) - dem.zmin.min(2)) / dem.zmin.dy);
+      % Find ending voxel coordinates
+      mx = ceil((stop(1) - dem.zmin.min(1)) / dem.zmin.dx);
+      my = ceil((stop(2) - dem.zmin.min(2)) / dem.zmin.dy);
       % Snap to 1 (from 0)
       x = max(x, 1);
       y = max(y, 1);
@@ -466,58 +491,56 @@ classdef DEM
       % (Necessary for rounding errors)
       x = min(x, dem.zmin.nx);
       y = min(y, dem.zmin.ny);
-      % Set x,y increments based on ray slope
-      if direction(1) >= 0
-        % Increasing x
-        tCellX = x / dem.zmin.nx;
+      % x-direction
+      if direction(1) > 0
         stepX = 1;
-      else
-        % Decreasing x
-        tCellX = (x - 1) / dem.zmin.nx;
+        tDeltaX = dem.zmin.dx / direction(1);
+        tMaxX = tmin + (dem.zmin.min(1) + x * dem.zmin.dx - start(1)) / direction(1);
+      elseif direction(1) < 0
         stepX = -1;
-      end
-      if direction(2) >= 0
-        % Increasing y
-        tCellY = y / dem.zmin.ny;
-        stepY = 1;
+        tDeltaX = - dem.zmin.dx / direction(1);
+        tMaxX = tmin + (dem.zmin.min(1) + (x - 1) * dem.zmin.dx - start(1)) / direction(1);
       else
-        % Decreasing y
-        tCellY = (y - 1) / dem.zmin.ny;
-        stepY = -1;
+        stepX = 0;
+        tDeltaX = tmax;
+        tMaxX = tmax;
       end
-      % FIXME: ?
-      boxSize = dem.zmin.max - dem.zmin.min;
-      cellMaxX = dem.zmin.min(1) + tCellX * boxSize(1);
-      cellMaxY = dem.zmin.min(2) + tCellY * boxSize(2);
-      % Compute values of t at which ray crosses vertical, horizontal voxel boundaries
-      tMaxX = tmin + (cellMaxX - start(1)) / direction(1);
-      tMaxY = tmin + (cellMaxY - start(2)) / direction(2);
-      % Width and height of voxel in t
-      tDeltaX = dem.zmin.dx / abs(direction(1));
-      tDeltaY = dem.zmin.dy / abs(direction(2));
-      % Find ending voxel coordinates
-      mx = ceil((stop(1) - dem.zmin.min(1)) / dem.zmin.dx);
-      my = ceil((stop(2) - dem.zmin.min(2)) / dem.zmin.dy);
-      % TODO: Snap to grid boundaries?
-      % (e.g. 0 -> 1)
+      % y-direction
+      if direction(2) > 0
+        stepY = 1;
+        tDeltaY = dem.zmin.dy / direction(2);
+        tMaxY = tmin + (dem.zmin.min(2) + y * dem.zmin.dy - start(2)) / direction(2);
+      elseif direction(2) < 0
+        stepY = -1;
+        tDeltaY = - dem.zmin.dy / direction(2);
+        tMaxY = tmin + (dem.zmin.min(2) + (y - 1) * dem.zmin.dy - start(2)) / direction(2);
+      else
+        stepY = 0;
+        tDeltaY = tmax;
+        tMaxY = tmax;
+      end
       % Traverse grid
-      z_in = start(3);
-      % i_cell = 1;
       % voxels = [];
+      z_in = start(3);
+      xpos = diff(dem.zmin.xlim) > 0;
+      ypos = diff(dem.zmin.ylim) > 0;
       while (x <= dem.zmin.nx) && (x >= 1) && (y <= dem.zmin.ny) && (y >= 1)
-        % TODO: Check if origin is below surface
-        % Check if within current voxel (in Z)
-        % either entered voxel at tMaxX or tMaxY
-        % if tMaxX: x != voxels(end, 1)
-        % if tMaxY: y != voxels(end, 2)
         z_out = origin(3) + min(tMaxY, tMaxX) * direction(3);
-        % Test for intersection of both possible triangles
-        % Convert to upper-left matrix indices (flip y)
-        % TODO: avoidable?
-        yi = dem.zmin.ny - y + 1;
-        % TODO: Simplify logic
-        if ~(isnan(dem.zmax.Z(yi, x)) || isnan(dem.zmin.Z(yi, x))) && ~((z_in > dem.zmax.Z(yi, x) && z_out > dem.zmax.Z(yi, x)) || (z_in < dem.zmin.Z(yi, x) && z_out < dem.zmin.Z(yi, x)))
-          sqi = sub2ind(size(dem.Z), [yi + 1; yi; yi; yi + 1], [x; x; x + 1; x + 1]);
+        % Flip indices as needed
+        % TODO: Avoid by fixing origin in Z matrices
+        if xpos
+          xi = x;
+        else
+          xi = dem.zmin.nx - x + 1;
+        end
+        if ypos
+          yi = y;
+        else
+          yi = dem.zmin.ny - y + 1;
+        end
+        % Test for intersection
+        if ~(isnan(dem.zmax.Z(yi, xi)) || isnan(dem.zmin.Z(yi, xi))) && ~((z_in > dem.zmax.Z(yi, xi) && z_out > dem.zmax.Z(yi, xi)) || (z_in < dem.zmin.Z(yi, xi) && z_out < dem.zmin.Z(yi, xi)))
+          sqi = sub2ind(size(dem.Z), [yi + 1; yi; yi; yi + 1], [xi; xi; xi + 1; xi + 1]);
           square = [dem.X(sqi), dem.Y(sqi), dem.Z(sqi)];
           tri1 = square([1 2 3], :);
           tri2 = square([3 4 1], :);
@@ -533,11 +556,11 @@ classdef DEM
           end
         end
         if x == mx && y == my
-          % voxels(end + 1, :) = [x, y];
+          % voxels(end + 1, :) = [xi, yi];
           break
         end
         % return voxels
-        % voxels(end + 1, :) = [x, y];
+        % voxels(end + 1, :) = [xi, yi];
         if tMaxX < tMaxY
           tMaxX = tMaxX + tDeltaX;
           x = x + stepX;
@@ -597,35 +620,31 @@ classdef DEM
       end
     end
 
-    function [z, xy] = ind2xyz(dem, xi, yi)
+    function [z, xy] = ind2xyz(dem, ind)
       % IND2XYZ Convert indices to XYZ points.
       %
-      %   z = dem.ind2xyz(zi)
-      %   [z, xy] = dem.ind2xyz(zi)
-      %   z = dem.ind2xyz(xi, yi)
-      %   [z, xy] = dem.ind2xyz(xi, yi)
+      %   z = dem.ind2xyz(ind)
+      %   [z, xy] = dem.ind2xyz(ind)
       %
       % Inputs:
-      %   zi     - Linear indices
-      %   xi, yi - Subscript indices in x (cols) and y (rows)
+      %   zi     - Linear indices or subscript indices in x (cols) and y (rows)
       %
       % Outputs:
-      %   xy - XY coordinates [x1 y1; ... ; xn yn]
       %   z  - Z coordinates [z1; ...; zn]
+      %   xy - XY coordinates [x1 y1; ... ; xn yn]
 
       % --- Linear indices ---
-      if nargin == 2
-        ind = xi;
+      if any(size(ind) == 1)
         if nargout > 1
           [yi, xi] = ind2sub([dem.ny dem.nx], ind);
           xy = [dem.x(xi)' dem.y(yi)'];
         end
       % --- Subscript indices ---
       else
-        ind = sub2ind([dem.ny, dem.nx], yi, xi);
         if nargout > 1
-          xy = [dem.x(xi)' dem.y(yi)'];
+          xy = [dem.x(ind(:, 1))' dem.y(ind(:, 2))'];
         end
+        ind = sub2ind([dem.ny, dem.nx], ind(:, 2), ind(:, 1));
       end
       ind = reshape(ind, [], 1);
       z = dem.Z(ind);
