@@ -665,7 +665,7 @@ classdef DEM
         xi = cells(:, 1);
         yi = dem.ny - (cells(:, 2) - 1);
         % Retrieve true x,y,z based on cell xy
-        [z, xy] = dem.ind2xyz(xi, yi);
+        [z, xy] = dem.ind2xyz([xi yi]);
         elevation = atand((z - xyz(3)) ./ sqrt((xy(:, 1) - xyz(1)).^2 + (xy(:, 2) - xyz(2)).^2));
         [~, i_max] = nanmax(elevation);
         if nargout > 1
