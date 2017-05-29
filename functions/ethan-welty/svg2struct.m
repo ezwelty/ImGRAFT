@@ -84,6 +84,13 @@ function S = svg2struct(svg, scale)
         temp = textscan(temp, '%f%f', 'Delimiter', ',', 'MultipleDelimsAsOne', 1, 'EndOfLine', '\t');
         data = [temp{1} temp{2} ; temp{1}(1) temp{2}(1)];
         S.(name) = bsxfun(@times, data, scale);
+      case 'line'
+        x1 = str2num(child.getAttribute('x1'));
+        y1 = str2num(child.getAttribute('y1'));
+        x2 = str2num(child.getAttribute('x2'));
+        y2 = str2num(child.getAttribute('y2'));
+        data = [x1 y1; x2 y2];
+        S.(name) = bsxfun(@times, data, scale);
       otherwise
         warning(['Unsupported tag encountered: ' tag])
     end
