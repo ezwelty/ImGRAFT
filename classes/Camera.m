@@ -488,7 +488,7 @@ classdef Camera
       end
       % If ideal, project and check if in frame.
       if all(cam.k == 0) && all(cam.p == 0)
-        uv = cam.camera2image(xy);
+        uv = cam.camera2image(xyz);
         in = cam.inframe(uv);
       % Otherwise, inverse-project edges and test points are inside.
       else
