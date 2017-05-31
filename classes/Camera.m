@@ -853,74 +853,6 @@ classdef Camera
       end
     end
 
-    % function [newcam, fit] = optimize(cam, xyz, uv, freeparams)
-    %   % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
-    %   %
-    %   %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
-    %   %
-    %   % Uses an optimization routine to minize the root-mean-square reprojection
-    %   % error of image-world point correspondences (xyz, uv) by adjusting the
-    %   % specified camera parameters.
-    %   %
-    %   % If uv has three columns, the third column is interpreted as a weight
-    %   % in the misfit function.
-    %   %
-    %   % Inputs:
-    %   %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
-    %   %   uv         - Image coordinates [u1 v1; u2 v2; ...]
-    %   %                (optional 3rd column may specify weights)
-    %   %   freeparams - Either a string, array, or 20-element vector describing
-    %   %                which parameters should be optimized (see Examples).
-    %   %
-    %   % Outputs:
-    %   %   newcam - Optimized camera
-    %   %   rmse   - Root-mean-square reprojection error
-    %   %   aic    - Akaike information criterion for reprojection errors, which
-    %   %            can help determine an appropriate degree of complexity for
-    %   %            the camera model (i.e. avoid overfitting).
-    %   %            NOTE: Only strictly applicable for unweighted fitting.
-    %   %
-    %   % Examples:
-    %   %   % Optimize all elements of viewdir:
-    %   %   cam.optimizecam(xyz, uv, '00000111000000000000')
-    %   %   cam.optimizecam(xyz, uv, 'viewdir')
-    %   %   cam.optimizecam(xyz, uv, {'viewdir'})
-    %   %   % Also optimize the third (z) element of xyz:
-    %   %   cam.optimizecam(xyz, uv, '00100111000000000000')
-    %   %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
-    %
-    %   [newcam, fit] = Camera.optimizeCams(cam, xyz, uv, freeparams);
-    %   newcam = newcam{1};
-    % end
-
-    % function [newcam, fit] = optimizeR(cam, uv, uv2, angles)
-    %   % Enforce defaults
-    %   if nargin < 4
-    %     angles = 1:3;
-    %   end
-    %   % Convert to ray directions
-    %   dxyz = cam.invproject(uv);
-    %   % Set up error function
-    %   flexparams = Camera.parseFreeparams({'viewdir', angles});
-    %   fixparams = Camera.parseFreeparams({});
-    %   ray_direction = true;
-    %   ef = @(d) reshape(projerror(Camera.updateCams(d, {cam}, {flexparams}, fixparams){1}, dxyz, uv2, ray_direction), [], 1);
-    %   % Optimize
-    %   [d, rss] = LMFnlsq(ef, zeros(length(angles), 1));
-    %   % Compile results
-    %   newcam = Camera.updateCams(d, {cam}, {flexparams}, fixparams){1};
-    %   k = length(angles);
-    %   n = size(uv, 1);
-    %   fit = struct();
-    %   fit.rmse = sqrt(rss ./ n);
-    %   % AIC: https://en.wikipedia.org/wiki/Akaike_information_criterion
-    %   % AIC small sample correction: http://brianomeara.info/tutorials/aic/
-    %   % Camera model selectio: http://imaging.utk.edu/publications/papers/2007/ICIP07_vo.pdf
-    %   fit.aic = n .* log(rss ./ n) + 2 * k * (n / (n - k - 1));
-    %   fit.bic = n .* log(rss ./ n) + 2 * k * log(n);
-    %   % fit.mdl = n .* log(rss ./ n) + 1 / (2 * k * log(n));
-    % end
-
     function [X, edge] = horizon(cam, dem, ddeg)
       if nargin < 3
         ddeg = 1;
@@ -1032,7 +964,43 @@ classdef Camera
     end
 
     function [newcams, fit] = optimize_bundle(varargin)
-      % cams, uv, xyz, flexparams, fixparams, luv, lxyz, ldmax
+      % OPTIMIZECAM  Calibrate a camera from paired image-world coordinates.
+      %
+      %   [newcam, rmse, aic] = cam.optimizecam(xyz, uv, freeparams)
+      %
+      % Uses an optimization routine to minize the root-mean-square reprojection
+      % error of image-world point correspondences (xyz, uv) by adjusting the
+      % specified camera parameters.
+      %
+      % If uv has three columns, the third column is interpreted as a weight
+      % in the misfit function.
+      %
+      % Inputs:
+      %   xyz        - World coordinates [x1 y1 z1; x2 y2 z2; ...]
+      %   uv         - Image coordinates [u1 v1; u2 v2; ...]
+      %                (optional 3rd column may specify weights)
+      %   freeparams - Either a string, array, or 20-element vector describing
+      %                which parameters should be optimized (see Examples).
+      %
+      % Outputs:
+      %   newcam - Optimized camera
+      %   rmse   - Root-mean-square reprojection error
+      %   aic    - Akaike information criterion for reprojection errors, which
+      %            can help determine an appropriate degree of complexity for
+      %            the camera model (i.e. avoid overfitting).
+      %            NOTE: Only strictly applicable for unweighted fitting.
+      %
+      % Examples:
+      %   % Optimize all elements of viewdir:
+      %   cam.optimizecam(xyz, uv, '00000111000000000000')
+      %   cam.optimizecam(xyz, uv, 'viewdir')
+      %   cam.optimizecam(xyz, uv, {'viewdir'})
+      %   % Also optimize the third (z) element of xyz:
+      %   cam.optimizecam(xyz, uv, '00100111000000000000')
+      %   cam.optimizecam(xyz, uv, {'viewdir', 'xyz', 1})
+      %
+
+      % INPUTS: cams, uv, xyz, flexparams, fixparams, luv, lxyz, ldmax
       % Enforce defaults
       if length(varargin) < 4
         error('Not enough input arguments.');
@@ -1067,7 +1035,6 @@ classdef Camera
       is_fixed = Camera.select_params(fixparams);
       params_initial = zeros(1, sum(is_fixed) + sum(is_flexible(:)));
       % Optimize (initial)
-      fprintf('Initial...\n');
       function e = ef(params)
         newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
         [duv, d] = Camera.projerror_bundle(newcams, uv, xyz, cell(1, length(newcams)), cell(1, length(newcams)), []);
@@ -1075,9 +1042,6 @@ classdef Camera
       end
       [params_final, ssq] = LMFnlsq(@ef, params_initial);
       cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
-      % Optimize (iterate)
-      fprintf('Refining...         ');
-      has_lines = find(not(cellfun('isempty', luv)) & not(cellfun('isempty', lxyz)));
       function d = ef2(params)
         newcams = Camera.update_bundle(params, cams, is_flexible, is_fixed);
         duv = Camera.projerror_bundle(newcams, uv, xyz, cell(1, length(newcams)), cell(1, length(newcams)), []);
@@ -1085,30 +1049,37 @@ classdef Camera
         d = sqrt(sum(e.^2, 2));
         d(d > ldmax) = ldmax;
       end
-      original_uv = uv;
-      original_xyz = xyz;
-      for i = has_lines
-        uv{i} = [uv{i}; luv{i}];
-      end
-      previous_ssq = Inf;
-      for iteration = 1:50
-        previous_cams = cams;
+      % Optimize (iterate)
+      has_lines = find(not(cellfun('isempty', luv)) & not(cellfun('isempty', lxyz)));
+      if length(has_lines) > 0
+        fprintf('Refining...         ');
+        original_uv = uv;
+        original_xyz = xyz;
         for i = has_lines
-          [~, ~, puv] = cams{i}.projerror_lines(luv{i}, lxyz{i});
-          xyz{i} = [original_xyz{i}; cams{i}.xyz + cams{1}.invproject(puv)];
+          uv{i} = [uv{i}; luv{i}];
         end
-        [params_final, ssq] = LMFnlsq(@ef2, params_initial);
-        cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
-        fprintf(['\b\b\b\b\b\b\b\b' num2str(ssq, '%1.2e')]);
-        if ssq >= previous_ssq
-          cams = previous_cams;
-          break
+        previous_ssq = Inf;
+        for iteration = 1:50
+          previous_cams = cams;
+          for i = has_lines
+            [~, ~, puv] = cams{i}.projerror_lines(luv{i}, lxyz{i});
+            xyz{i} = [original_xyz{i}; cams{i}.xyz + cams{1}.invproject(puv)];
+          end
+          [params_final, ssq] = LMFnlsq(@ef2, params_initial);
+          cams = Camera.update_bundle(params_final, cams, is_flexible, is_fixed);
+          fprintf(['\b\b\b\b\b\b\b\b' num2str(ssq, '%1.2e')]);
+          if ssq >= previous_ssq
+            cams = previous_cams;
+            break
+          end
+          previous_ssq = ssq;
         end
-        previous_ssq = ssq;
+        fprintf('\n');
+        uv = original_uv;
+        xyz = original_xyz;
+      else
+        cams = newcams;
       end
-      fprintf('\n');
-      uv = original_uv;
-      xyz = original_xyz;
       % Model statistics
       n = reshape(cellfun(@(x, y) size(x, 1) + size(y, 1), uv, luv), 1, []);
       e = Camera.projerror_bundle(cams, uv, xyz, luv, lxyz, ldmax);
