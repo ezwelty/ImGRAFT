@@ -307,7 +307,7 @@ classdef Image
       hold off
     end
 
-    function I0 = project(img, cam, dxyz)
+    function [I0, dxyz] = project(img, cam, dxyz)
       if any(cam.imgsz ~= img.size)
         error('Original and target image sizes must be equal.')
       end
