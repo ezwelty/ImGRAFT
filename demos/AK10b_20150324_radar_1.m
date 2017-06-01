@@ -174,7 +174,7 @@ end
 is_anchor = arrayfun(@(img) any(~isempty(img.gcp.xyz) & ~isempty(img.gcl.xyz)), images);
 anchor_ind = find(is_anchor);
 flexparams = {'viewdir'};
-fixparams = {'f', 'k', 1};
+fixparams = {'f', 'k', 1, 'c', 'p', 1};
 [anchors, fit] = Camera.optimize_images(images(is_anchor), flexparams, fixparams, LDMAX, LXYZ)
 
 %%
@@ -309,7 +309,7 @@ for i = setdiff(1:length(images), i0)
   end
   [~, filename, ext] = fileparts(images(i).file);
   outfile = fullfile(OUT_DIR, 'aligned', [num2str(i0), '-', num2str(i), '-', filename, ext]);
-  imwrite(I0, outfile, 'Quality', 100);
+  imwrite(I0, outfile, 'Quality', 95);
 end
 
 %% Track moving features
@@ -492,11 +492,11 @@ caxis(vrange);
 colormap jet;
 colorbar
 title('Time-lapse velocities (m/day)', 'fontsize', 14);
-% Difference
+% Normalized difference
 ax3 = subtightplot(1, 3, 3);
 showimg(GLACIER_DEM.x, GLACIER_DEM.y, hshade);
 hold on
-alphawarp(X, Y, 100 * abs(V - V_refm), 1);
+alphawarp(X, Y, 100 * abs(V - V_refm) ./ V_refm, 1);
 caxis([0, 100]);
 colormap jet;
 colorbar
@@ -506,7 +506,7 @@ quiver(X, Y, s * DX / ddays, s * DY / ddays, 0, 'r');
 legend('', 'radar', 'time-lapse');
 title(['Percent error (%) | Velocity (', num2str(s), 'x)'], 'fontsize', 14);
 linkaxes([ax1, ax2, ax3]);
-xlim([min(min(X)), max(max(X))]);
+xlim([min(min(X)) - 1000, max(max(X)) + 1000]);
 ylim([min(min(Y)), max(max(Y))]);
 
 %%
