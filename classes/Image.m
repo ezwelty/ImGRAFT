@@ -33,6 +33,7 @@ classdef Image
     fixedpolys = {};
     freepolys = {};
     anchor = 0;
+    I = [];
   end
 
   properties (SetAccess = private)
@@ -260,7 +261,11 @@ classdef Image
       if nargin < 2 || isempty(scale)
         scale = img.scale;
       end
-      I = imread(img.file);
+      if isempty(img.I)
+        I = imread(img.file);
+      else
+        I = img.I;
+      end
       if ~isempty(scale) && scale ~= 1
         I = imresize(I, scale);
       end
@@ -321,7 +326,7 @@ classdef Image
       I = double(img.read());
       I0 = uint8(nan(size(I)));
       for channel = 1:size(I, 3)
-        temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2), '*linear');
+        temp = interp2(u, v, I(:, :, channel), puv(:, 1), puv(:, 2), '*cubic');
         I0(:, :, channel) = reshape(temp, flip(cam.imgsz));
       end
     end
